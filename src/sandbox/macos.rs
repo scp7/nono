@@ -1,0 +1,331 @@
+use crate::capability::{CapabilitySet, FsAccess};
+use crate::error::{NonoError, Result};
+use std::ffi::CString;
+use std::os::raw::c_char;
+use std::ptr;
+use tracing::{debug, info};
+
+// FFI bindings to macOS sandbox API
+// These are private APIs but have been stable for years
+// Reference: https://reverse.put.as/wp-content/uploads/2011/09/Apple-Sandbox-Guide-v1.0.pdf
+
+// Flags for sandbox_init
+// 0 = raw profile string (what we use)
+// SANDBOX_NAMED = 1 = use a named profile from disk
+#[allow(dead_code)]
+const SANDBOX_NAMED: u32 = 0x0001;
+
+extern "C" {
+    fn sandbox_init(
+        profile: *const c_char,
+        flags: u64,
+        errorbuf: *mut *mut c_char,
+    ) -> i32;
+
+    fn sandbox_free_error(errorbuf: *mut c_char);
+}
+
+/// Check if Seatbelt sandboxing is supported
+pub fn is_supported() -> bool {
+    // Seatbelt is available on all modern macOS versions
+    true
+}
+
+/// Get information about sandbox support
+pub fn support_info() -> String {
+    "macOS Seatbelt sandbox available".to_string()
+}
+
+/// Get list of sensitive paths that should be denied read access
+fn get_sensitive_paths() -> Vec<String> {
+    let mut paths = vec![
+        // SSH keys and config
+        "~/.ssh".to_string(),
+        // AWS credentials
+        "~/.aws".to_string(),
+        // GnuPG keys
+        "~/.gnupg".to_string(),
+        // Generic credentials directories
+        "~/.credentials".to_string(),
+        "~/.secrets".to_string(),
+        // Cloud provider configs
+        "~/.azure".to_string(),
+        "~/.gcloud".to_string(),
+        "~/.config/gcloud".to_string(),
+        // Kubernetes configs
+        "~/.kube".to_string(),
+        // Docker configs (may contain registry credentials)
+        "~/.docker".to_string(),
+        // NPM tokens
+        "~/.npmrc".to_string(),
+        // Git credentials
+        "~/.git-credentials".to_string(),
+        // Netrc (FTP/HTTP credentials)
+        "~/.netrc".to_string(),
+        // Password managers
+        "~/.password-store".to_string(),
+        "~/.1password".to_string(),
+        // Private keys directory
+        "~/.keys".to_string(),
+        "~/.pki".to_string(),
+        // Terraform state (may contain secrets)
+        "~/.terraform.d".to_string(),
+        // Vault tokens
+        "~/.vault-token".to_string(),
+        // macOS Keychain (extra protection layer)
+        "~/Library/Keychains".to_string(),
+    ];
+
+    // Expand ~ to actual home directory
+    if let Ok(home) = std::env::var("HOME") {
+        paths = paths
+            .into_iter()
+            .map(|p| p.replace("~", &home))
+            .collect();
+    }
+
+    paths
+}
+
+/// Generate a Seatbelt profile from capabilities
+fn generate_profile(caps: &CapabilitySet) -> String {
+    let mut profile = String::new();
+
+    // Profile version
+    profile.push_str("(version 1)\n");
+
+    // Start with deny default, but we'll allow many things needed for basic operation
+    profile.push_str("(deny default)\n");
+
+    // Debug: log denials (comment out for production)
+    // profile.push_str("(debug deny)\n");
+
+    // Allow all process operations
+    profile.push_str("(allow process*)\n");
+
+    // Allow all system operations except what we specifically want to deny
+    profile.push_str("(allow sysctl*)\n");
+    profile.push_str("(allow mach*)\n");
+    profile.push_str("(allow ipc*)\n");
+    profile.push_str("(allow signal)\n");
+    profile.push_str("(allow system*)\n");
+
+    // File read permissions:
+    // Allow all file reads EXCEPT sensitive credential paths
+    // This is a pragmatic compromise: executables need broad read access to function,
+    // but we explicitly protect high-value credential locations
+    profile.push_str("(allow file-read*)\n");
+
+    // Deny access to sensitive paths (credentials, keys, tokens)
+    // These denials override the allow above
+    for path in get_sensitive_paths() {
+        let escaped_path = path.replace('\\', "\\\\").replace('"', "\\\"");
+        profile.push_str(&format!(
+            "(deny file-read* (subpath \"{}\"))\n",
+            escaped_path
+        ));
+    }
+
+    // Allow writes only to specific system paths and granted paths
+    profile.push_str("(allow file-write*\n");
+    profile.push_str("    (subpath \"/dev\")\n");
+    profile.push_str("    (subpath \"/private/tmp\")\n");
+    profile.push_str("    (subpath \"/tmp\")\n");
+    profile.push_str("    (subpath \"/private/var/folders\")\n");
+    profile.push_str(")\n");
+
+    // Allow file ioctl for TTY
+    profile.push_str("(allow file-ioctl)\n");
+
+    // Add user-specified filesystem capabilities
+    // Note: These come AFTER the deny rules, so explicit user grants can override
+    // the sensitive path denials. This is intentional - if a user explicitly grants
+    // access to ~/.ssh, we respect that decision.
+    for cap in &caps.fs {
+        let path = cap.resolved.display().to_string();
+        // Escape any special characters in path
+        let escaped_path = path.replace('\\', "\\\\").replace('"', "\\\"");
+
+        match cap.access {
+            FsAccess::Read => {
+                profile.push_str(&format!(
+                    "(allow file-read* (subpath \"{}\"))\n",
+                    escaped_path
+                ));
+            }
+            FsAccess::Write => {
+                profile.push_str(&format!(
+                    "(allow file-write* (subpath \"{}\"))\n",
+                    escaped_path
+                ));
+            }
+            FsAccess::ReadWrite => {
+                profile.push_str(&format!(
+                    "(allow file-read* file-write* (subpath \"{}\"))\n",
+                    escaped_path
+                ));
+            }
+        }
+    }
+
+    // Allow read access to user's home directory essentials
+    // (library caches, preferences, etc. needed for many tools)
+    if let Ok(home) = std::env::var("HOME") {
+        let home_escaped = home.replace('\\', "\\\\").replace('"', "\\\"");
+        profile.push_str(&format!(
+            "(allow file-read* (subpath \"{}/Library\"))\n",
+            home_escaped
+        ));
+        profile.push_str(&format!(
+            "(allow file-write* (subpath \"{}/Library/Caches\"))\n",
+            home_escaped
+        ));
+        profile.push_str(&format!(
+            "(allow file-write* (subpath \"{}/Library/Logs\"))\n",
+            home_escaped
+        ));
+    }
+
+    // Network rules
+    // Note: macOS Seatbelt has limited network filtering capabilities.
+    // It only supports binary control: all network or no network.
+    // Per-host filtering would require a proxy-based approach.
+    if caps.net_allow {
+        // Network access enabled - allow all outbound
+        profile.push_str("(allow network-outbound)\n");
+        profile.push_str("(allow network-inbound (local tcp \"localhost:*\"))\n");
+    } else {
+        // Network blocked
+        profile.push_str("(deny network*)\n");
+    }
+
+    profile
+}
+
+/// Apply Seatbelt sandbox with the given capabilities
+pub fn apply(caps: &CapabilitySet) -> Result<()> {
+    let profile = generate_profile(caps);
+
+    debug!("Generated Seatbelt profile:\n{}", profile);
+
+    let profile_cstr = CString::new(profile)
+        .map_err(|e| NonoError::SandboxInit(format!("Invalid profile string: {}", e)))?;
+
+    let mut error_buf: *mut c_char = ptr::null_mut();
+
+    // Use 0 flag for raw profile string (not a named profile)
+    let result = unsafe {
+        sandbox_init(
+            profile_cstr.as_ptr(),
+            0,  // Raw profile mode
+            &mut error_buf,
+        )
+    };
+
+    if result != 0 {
+        let error_msg = if !error_buf.is_null() {
+            let msg = unsafe {
+                std::ffi::CStr::from_ptr(error_buf)
+                    .to_string_lossy()
+                    .into_owned()
+            };
+            unsafe { sandbox_free_error(error_buf) };
+            msg
+        } else {
+            format!("sandbox_init returned error code {}", result)
+        };
+
+        return Err(NonoError::SandboxInit(error_msg));
+    }
+
+    info!("Seatbelt sandbox applied successfully");
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::capability::FsCapability;
+    use std::path::PathBuf;
+
+    #[test]
+    fn test_generate_profile_empty() {
+        let caps = CapabilitySet::default();
+        let profile = generate_profile(&caps);
+
+        assert!(profile.contains("(version 1)"));
+        assert!(profile.contains("(deny default)"));
+        assert!(profile.contains("(deny network*)"));
+    }
+
+    #[test]
+    fn test_generate_profile_with_paths() {
+        let mut caps = CapabilitySet::default();
+        caps.fs.push(FsCapability {
+            original: PathBuf::from("/test"),
+            resolved: PathBuf::from("/test"),
+            access: FsAccess::ReadWrite,
+        });
+
+        let profile = generate_profile(&caps);
+
+        assert!(profile.contains("file-read* file-write*"));
+        assert!(profile.contains("/test"));
+    }
+
+    #[test]
+    fn test_generate_profile_with_network_enabled() {
+        let mut caps = CapabilitySet::default();
+        caps.net_allow = true;
+
+        let profile = generate_profile(&caps);
+
+        // With network enabled, should allow all outbound
+        assert!(profile.contains("(allow network-outbound)"));
+        // Should not deny network when enabled
+        assert!(!profile.contains("(deny network*)"));
+    }
+
+    #[test]
+    fn test_generate_profile_with_network_disabled() {
+        let mut caps = CapabilitySet::default();
+        caps.net_allow = false;
+
+        let profile = generate_profile(&caps);
+
+        // With network disabled, should deny all
+        assert!(profile.contains("(deny network*)"));
+        assert!(!profile.contains("(allow network-outbound)"));
+    }
+
+    #[test]
+    fn test_support_info() {
+        let info = support_info();
+        assert!(info.contains("Seatbelt"));
+    }
+
+    #[test]
+    fn test_sensitive_paths_denied() {
+        let caps = CapabilitySet::default();
+        let profile = generate_profile(&caps);
+
+        // Should deny common sensitive paths
+        assert!(profile.contains(".ssh"));
+        assert!(profile.contains(".aws"));
+        assert!(profile.contains(".gnupg"));
+        assert!(profile.contains("(deny file-read*"));
+    }
+
+    #[test]
+    fn test_get_sensitive_paths() {
+        let paths = get_sensitive_paths();
+
+        // Should have multiple sensitive paths
+        assert!(paths.len() > 10);
+
+        // Paths should be expanded (not contain ~)
+        for path in &paths {
+            assert!(!path.contains('~'), "Path should be expanded: {}", path);
+        }
+    }
+}
