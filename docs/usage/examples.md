@@ -1,4 +1,7 @@
-# Examples
+---
+title: Examples
+description: Common usage patterns and recipes for nono
+---
 
 Common usage patterns and recipes for nono.
 

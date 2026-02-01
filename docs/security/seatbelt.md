@@ -1,4 +1,7 @@
-# macOS Seatbelt
+---
+title: macOS Seatbelt
+description: How nono uses Apple's Seatbelt sandbox on macOS
+---
 
 nono uses Apple's Seatbelt sandbox framework on macOS to enforce capability restrictions at the kernel level.
 

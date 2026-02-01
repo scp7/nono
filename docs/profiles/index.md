@@ -1,4 +1,7 @@
-# Profiles
+---
+title: Profiles
+description: Pre-configured capability sets for common tools and agents
+---
 
 Profiles are pre-configured capability sets for common tools and agents. Instead of specifying flags manually, you can use a profile that defines sensible defaults.
 

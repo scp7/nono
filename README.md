@@ -3,7 +3,6 @@
     <source media="(prefers-color-scheme: dark)" srcset="./assets/logo-light.png" />
     <img alt="nono logo" src="./assets/nono-mascot.png" style="width:80%;max-width:80%;height:auto;display:block;margin:0 auto;" />
   </picture>
-  <h3>Don't YOLO! When you can nono!</h3>
 
   <!-- CTA Buttons -->
   <p>
@@ -26,9 +25,14 @@
   </p>
 </div>
 
+<div style="padding: 16px; background-color: #f8d7da; border: 1px solid #f5c6cb; border-radius: 4px; color: #721c24; margin: 16px 0;">
+  <strong>🚧 Security Notice</strong><br>
+  This is an early release that has not undergone comprehensive security auditing or peer review. Although care and attenion has been made and the author has a long background in security, there are no guarantees are made regarding maturity or stability. Not recommended for production environments.
+</div>
+
 ## A secure shell for AI agents.
 
-**nono** is a secure, OS-enforced capability shell for running untrusted AI agents and processes. Unlike policy-based sandboxes that intercept and filter operations, nono leverages OS security primitives (Landlock on Linux, Seatbelt on macOS) to create an environment where unauthorized operations are structurally impossible.
+**nono** is a secure, kernel-enforced capability shell for running untrusted AI agents and processes. Unlike policy-based sandboxes that intercept and filter operations, nono leverages OS security primitives (Landlock on Linux, Seatbelt on macOS) to create an environment where unauthorized operations are structurally impossible.
 
 ## Quick Start
 
@@ -51,6 +55,7 @@ nono run --allow . --net-block -- your-command
 - **No escape hatch** - Once inside nono, there is no mechanism to bypass restrictions
 - **Agent agnostic** - Works with any AI agent (Claude, GPT, opencode, openclaw) or any process
 - **OS-level enforcement** - Kernel denies unauthorized operations
+- **Destructive command blocking** - Blocks dangerous commands like `rm`, `dd`, `chmod` by default
 - **Cross-platform** - Linux (Landlock) and macOS (Seatbelt)
 
 ## Usage
@@ -73,6 +78,49 @@ nono run --allow . --dry-run -- command
 
 # Check why a path would be blocked
 nono why ~/.ssh/id_rsa
+```
+
+## Command Blocking
+
+nono blocks dangerous commands by default to prevent AI agents from accidentally (or maliciously) causing harm. This provides defense-in-depth beyond filesystem restrictions.
+
+### Blocked Commands
+
+The following categories of commands are blocked by default:
+
+| Category | Commands |
+|----------|----------|
+| File destruction | `rm`, `rmdir`, `shred`, `srm` |
+| Disk operations | `dd`, `mkfs`, `fdisk`, `parted`, `wipefs` |
+| Permission changes | `chmod`, `chown`, `chgrp`, `chattr` |
+| System modification | `shutdown`, `reboot`, `halt`, `systemctl` |
+| Package managers | `apt`, `brew`, `pip`, `yum`, `pacman` |
+| File operations | `mv`, `cp`, `truncate` |
+| Privilege escalation | `sudo`, `su`, `doas`, `pkexec` |
+| Network exfiltration | `scp`, `rsync`, `sftp`, `ftp` |
+
+### Overriding Command Blocks
+
+```bash
+# Allow a specific blocked command (use with caution)
+nono run --allow . --allow-command rm -- rm ./temp-file.txt
+
+# Block an additional command
+nono run --allow . --block-command my-dangerous-tool -- my-script.sh
+```
+
+### Kernel-Level Protection
+
+Even if a command is allowed via `--allow-command`, nono applies kernel-level protection that blocks:
+
+- **File deletion** - `unlink`/`rmdir` syscalls are blocked
+- **File truncation** - Cannot zero out files via truncation
+
+This means even if `rm` is allowed, the actual deletion is blocked by the kernel:
+
+```bash
+$ nono run --allow /tmp/test --allow-command rm -- rm /tmp/test/file.txt
+rm: /tmp/test/file.txt: Operation not permitted
 ```
 
 ## How It Works
@@ -116,12 +164,23 @@ See [SPEC.md](./SPEC.md) and [IMPLEMENTATION.md](./IMPLEMENTATION.md) for detail
 
 ## Security Model
 
-nono follows a capability-based security model:
+nono follows a capability-based security model with defense-in-depth:
 
-1. **User enters sandbox** - You start nono with explicit capabilities
+1. **Command validation** - Dangerous commands (rm, dd, chmod, etc.) are blocked before execution
 2. **Sandbox applied** - OS-level restrictions are applied (irreversible)
-3. **Command executed** - The command runs with only granted capabilities
-4. **All children inherit** - Subprocess also run under restrictions
+3. **Kernel enforcement** - Even allowed paths cannot have files deleted or truncated
+4. **Command executed** - The command runs with only granted capabilities
+5. **All children inherit** - Subprocesses also run under restrictions
+
+### Defense Layers
+
+| Layer | Protection | Bypass |
+|-------|------------|--------|
+| Command blocklist | Blocks known-dangerous binaries | `--allow-command` |
+| Kernel (delete) | Blocks unlink/rmdir syscalls | None |
+| Kernel (truncate) | Blocks file truncation | None |
+| Filesystem sandbox | Restricts path access | Explicit `--allow` |
+| Network sandbox | Blocks network access | Remove `--net-block` |
 
 The key difference from policy-based sandboxes: there is no "escape hatch" API. The agent cannot request more permissions because the mechanism doesn't exist.
 

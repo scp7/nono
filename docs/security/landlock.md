@@ -1,4 +1,7 @@
-# Linux Landlock
+---
+title: Linux Landlock
+description: How nono uses Landlock LSM on Linux for kernel-level enforcement
+---
 
 nono uses Landlock LSM (Linux Security Module) on Linux to enforce capability restrictions at the kernel level.
 
@@ -85,8 +88,9 @@ AccessNet::BindTcp   // Control which ports can be bound
 AccessNet::ConnectTcp // Control outbound connections
 ```
 
-!!! warning "Kernel Requirement"
-    Network filtering requires kernel 6.7+. On older kernels, nono cannot enforce network restrictions via Landlock and will warn you.
+<Warning>
+  Network filtering requires kernel 6.7+. On older kernels, nono cannot enforce network restrictions via Landlock and will warn you.
+</Warning>
 
 ### Fallback for Older Kernels
 

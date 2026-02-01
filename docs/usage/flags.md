@@ -1,4 +1,7 @@
-# CLI Reference
+---
+title: CLI Reference
+description: Complete reference for all nono command-line flags
+---
 
 Complete reference for all nono command-line flags.
 
@@ -120,10 +123,11 @@ Block all network access. Network is **allowed by default**.
 nono run --allow . --net-block -- cargo build
 ```
 
-!!! note "Binary Control"
-    Network access is currently binary - either all outbound connections are allowed, or all are blocked. There is no per-host or per-domain filtering.
+<Note>
+  Network access is currently binary - either all outbound connections are allowed, or all are blocked. There is no per-host or per-domain filtering.
 
-    Granular network filtering (e.g., allowing only specific domains like `api.anthropic.com`) is a desired feature but not yet supported. Apple Seatbelt has technical limitations that make per-host filtering challenging and would require significant experimentation to implement correctly. This feature may be added in a future release.
+  Granular network filtering (e.g., allowing only specific domains like `api.anthropic.com`) is a desired feature but not yet supported. Apple Seatbelt has technical limitations that make per-host filtering challenging and would require significant experimentation to implement correctly. This feature may be added in a future release.
+</Note>
 
 ### Secrets Options
 
@@ -217,8 +221,9 @@ Specify a configuration file path.
 nono run --config ./nono.toml -- command
 ```
 
-!!! note "Coming Soon"
-    Configuration file support is planned for a future release.
+<Note>
+  Configuration file support is planned for a future release.
+</Note>
 
 ## `nono why` Options
 

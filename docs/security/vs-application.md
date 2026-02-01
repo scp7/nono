@@ -1,4 +1,7 @@
-# Why OS-Level Controls
+---
+title: Why OS-Level Controls
+description: Why kernel enforcement beats application-level controls
+---
 
 nono uses kernel-enforced sandboxing instead of application-level controls. This page explains why this architectural choice provides fundamentally stronger security guarantees.
 

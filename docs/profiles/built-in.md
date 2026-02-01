@@ -1,7 +1,11 @@
-# Built-in Profiles
+---
+title: Built-in Profiles
+description: Pre-configured profiles for popular AI coding agents
+---
 
-!!! info "Coming Soon"
-    Built-in profiles are planned for Phase 2. This page documents the planned profiles.
+<Info>
+  Built-in profiles are planned for Phase 2. This page documents the planned profiles.
+</Info>
 
 nono ships with built-in profiles for popular AI coding agents. These profiles are compiled into the binary and provide audited, sensible defaults.
 

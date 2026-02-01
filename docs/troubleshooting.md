@@ -1,4 +1,7 @@
-# Troubleshooting
+---
+title: Troubleshooting
+description: Common issues and solutions when using nono
+---
 
 Common issues and solutions when using nono.
 

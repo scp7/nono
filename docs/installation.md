@@ -1,4 +1,7 @@
-# Installation
+---
+title: Installation
+description: Get nono running on your system
+---
 
 ## From Source (Recommended)
 
@@ -6,8 +9,8 @@ nono is written in Rust. You'll need the Rust toolchain installed.
 
 ### Prerequisites
 
-=== "Linux"
-
+<Tabs>
+  <Tab title="Linux">
     - Rust 1.70 or later
     - Linux kernel 5.13+ (for Landlock support)
     - Kernel 6.7+ recommended (for network filtering)
@@ -16,12 +19,13 @@ nono is written in Rust. You'll need the Rust toolchain installed.
     ```bash
     uname -r
     ```
-
-=== "macOS"
-
+  </Tab>
+  <Tab title="macOS">
     - Rust 1.70 or later
     - macOS 10.15 (Catalina) or later
     - Xcode Command Line Tools
+  </Tab>
+</Tabs>
 
 ### Build Steps
 
@@ -52,8 +56,9 @@ echo 'export PATH="$PATH:/path/to/nono/target/release"' >> ~/.zshrc
 cargo install nono
 ```
 
-!!! note "Coming Soon"
-    The crate is not yet published to crates.io. Use the source installation method for now.
+<Note>
+  The crate is not yet published to crates.io. Use the source installation method for now.
+</Note>
 
 ## Homebrew (macOS)
 
@@ -61,8 +66,9 @@ cargo install nono
 brew install nono
 ```
 
-!!! note "Coming Soon"
-    The Homebrew formula is not yet available. Use the source installation method for now.
+<Note>
+  The Homebrew formula is not yet available. Use the source installation method for now.
+</Note>
 
 ## Verify Installation
 

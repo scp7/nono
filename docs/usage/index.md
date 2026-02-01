@@ -1,4 +1,7 @@
-# Usage Overview
+---
+title: Usage Overview
+description: Learn how to use nono to sandbox commands
+---
 
 nono wraps any command with an OS-level sandbox. You specify what the command is allowed to access, and nono enforces those restrictions at the kernel level.
 
@@ -86,10 +89,11 @@ Network is **allowed by default**. Use `--net-block` to disable outbound connect
 nono run --allow . --net-block -- cargo build
 ```
 
-!!! note "Binary Control"
-    Network access is currently all-or-nothing. You can either allow all network access (default) or block it entirely with `--net-block`.
+<Note>
+  Network access is currently all-or-nothing. You can either allow all network access (default) or block it entirely with `--net-block`.
 
-    Granular filtering (allowing only specific domains) is not yet supported due to technical limitations in Apple Seatbelt and requires experimentation. This feature may be added in a future release.
+  Granular filtering (allowing only specific domains) is not yet supported due to technical limitations in Apple Seatbelt and requires experimentation. This feature may be added in a future release.
+</Note>
 
 ## What Happens at Runtime
 

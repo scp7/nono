@@ -1,4 +1,7 @@
-# Secrets Management
+---
+title: Secrets Management
+description: Securely load API keys from the system keystore
+---
 
 nono can securely load API keys and other secrets from the system keystore (macOS Keychain or Linux Secret Service) and inject them as environment variables into the sandboxed process.
 
@@ -308,8 +311,9 @@ Then run:
 nono-with-pass --allow . -- my-agent
 ```
 
-!!! note "Future Enhancement"
-    Native `pass` backend support is planned for a future release.
+<Note>
+  Native `pass` backend support is planned for a future release.
+</Note>
 
 ### Option 2: Environment Variables via Wrapper
 
@@ -336,8 +340,9 @@ source ~/.config/nono/secrets.env
 exec nono run "$@"
 ```
 
-!!! warning "Security Note"
-    File-based secrets are less secure than a proper keystore. Ensure the file has strict permissions (`chmod 600`) and is not backed up to insecure locations.
+<Warning>
+  File-based secrets are less secure than a proper keystore. Ensure the file has strict permissions (`chmod 600`) and is not backed up to insecure locations.
+</Warning>
 
 ### Option 3: Set Up Headless Keyring
 

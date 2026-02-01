@@ -1,4 +1,7 @@
-# Security Model
+---
+title: Security Model
+description: Understanding nono's security guarantees, assumptions, and limitations
+---
 
 nono implements a capability-based security model using kernel-level enforcement. This page explains the security guarantees, assumptions, and limitations.
 
