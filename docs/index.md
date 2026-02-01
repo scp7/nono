@@ -1,9 +1,7 @@
 ---
-title: Introduction
-description: A capability-based shell for running untrusted AI agents with OS-enforced isolation
 ---
 
-<img alt="nono mascot" src="/docs/assets/nono-mascot.png" style={{width: "50%", maxWidth: "400px", height: "auto", display: "block", margin: "0 auto"}} />
+<img alt="nono mascot" src="/assets/nono-mascot.png" style={{width: "100%", maxWidth: "600px", height: "auto", display: "block", margin: "0 auto 2rem auto"}} />
 
 AI coding agents are powerful but can also be dangerous. They can read your SSH keys, exfiltrate secrets to remote servers, or delete critical files. Current solutions rely on the agent to police itself - but bugs happen and security vulnerabilities are common.
 

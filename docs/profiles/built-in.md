@@ -89,7 +89,7 @@ version = "1.0.0"
 description = "OpenClaw messaging gateway"
 
 [filesystem]
-allow = ["$WORKDIR"]
+allow = ["$WORKDIR", "$TMPDIR/openclaw-$UID"]
 read = ["$XDG_CONFIG_HOME/openclaw"]
 
 [network]
@@ -104,6 +104,7 @@ nono run --profile openclaw -- openclaw
 **Grants:**
 
 - Read+write access to current working directory
+- Read+write access to OpenClaw temp directory (for lock files)
 - Read access to OpenClaw configuration
 - Full network access
 
