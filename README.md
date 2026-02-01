@@ -36,18 +36,22 @@
 
 ## Quick Start
 
+### Homebrew (macOS)
+
 ```bash
-# Build
+brew tap lukehinds/nono 
+brew install nono
+```
+
+### Prebuilt Binaries
+Download the latest release from the [Releases](https://github.com/lukehinds/nono/releases) page.
+
+### Build from Source
+
+```bash
+git clone https://github.com/lukehinds/nono.git
+cd nono
 cargo build --release
-
-# Run a command with filesystem access only to current directory
-nono run --allow . -- your-command
-
-# Example: Run Claude Code with restricted access
-nono run --allow ./my-project -- claude
-
-# Block network access (air-gapped mode)
-nono run --allow . --net-block -- your-command
 ```
 
 ## Features

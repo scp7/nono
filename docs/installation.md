@@ -27,7 +27,18 @@ nono is written in Rust. You'll need the Rust toolchain installed.
   </Tab>
 </Tabs>
 
-### Build Steps
+
+### Homebrew (macOS)
+
+```bash
+brew tap lukehinds/nono 
+brew install nono
+```
+
+### Prebuilt Binaries
+Download the latest release from the [Releases](https://github.com/lukehinds/nono/releases) page.
+
+### Build from Source
 
 ```bash
 # Clone the repository
