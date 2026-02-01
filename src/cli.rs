@@ -1,4 +1,4 @@
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 /// nono - The opposite of YOLO
@@ -8,33 +8,55 @@ use std::path::PathBuf;
 #[derive(Parser, Debug)]
 #[command(name = "nono")]
 #[command(author, version, about, long_about = None)]
-#[command(trailing_var_arg = true)]
-#[command(after_help = "EXAMPLES:
+pub struct Cli {
+    #[command(subcommand)]
+    pub command: Commands,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum Commands {
+    /// Run a command inside the sandbox
+    #[command(trailing_var_arg = true)]
+    #[command(after_help = "EXAMPLES:
     # Allow read/write to current directory, run claude
-    nono --allow . claude
+    nono run --allow . claude
 
     # Use a named profile (built-in)
-    nono --profile claude-code claude
+    nono run --profile claude-code claude
 
     # Profile with explicit working directory
-    nono --profile claude-code --workdir ./my-project claude
+    nono run --profile claude-code --workdir ./my-project claude
 
     # Profile + additional permissions
-    nono --profile openclaw --read /tmp/extra openclaw gateway
+    nono run --profile openclaw --read /tmp/extra openclaw gateway
 
     # Read-only access to src, write to output
-    nono --read ./src --write ./output cargo build
+    nono run --read ./src --write ./output cargo build
 
     # Multiple allowed paths
-    nono --allow ./project-a --allow ./project-b claude
+    nono run --allow ./project-a --allow ./project-b claude
 
     # Block network access (network allowed by default)
-    nono --allow . --net-block cargo build
+    nono run --allow . --net-block cargo build
 
     # Allow specific files (not directories)
-    nono --allow . --write-file ~/.claude.json claude
+    nono run --allow . --write-file ~/.claude.json claude
 ")]
-pub struct Args {
+    Run(Box<RunArgs>),
+
+    /// Check why a path would be blocked or allowed
+    #[command(after_help = "EXAMPLES:
+    # Check if ~/.ssh/id_rsa would be accessible
+    nono why ~/.ssh/id_rsa
+
+    # Check a project directory
+    nono why ./my-project
+")]
+    Why(WhyArgs),
+}
+
+#[derive(Parser, Debug)]
+pub struct RunArgs {
     // === Directory permissions (recursive) ===
     /// Directories to allow read+write access (recursive)
     #[arg(long, short = 'a', value_name = "DIR")]
@@ -96,30 +118,49 @@ pub struct Args {
     pub command: Vec<String>,
 }
 
+#[derive(Parser, Debug)]
+pub struct WhyArgs {
+    /// Path to check
+    pub path: PathBuf,
+
+    /// Also show what flags would grant access
+    #[arg(long, short = 's')]
+    pub suggest: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn test_basic_args() {
-        // Without --
-        let args = Args::parse_from(["nono", "--allow", ".", "echo", "hello"]);
-        assert_eq!(args.allow.len(), 1);
-        assert_eq!(args.command, vec!["echo", "hello"]);
+    fn test_run_basic() {
+        let cli = Cli::parse_from(["nono", "run", "--allow", ".", "echo", "hello"]);
+        match cli.command {
+            Commands::Run(args) => {
+                assert_eq!(args.allow.len(), 1);
+                assert_eq!(args.command, vec!["echo", "hello"]);
+            }
+            _ => panic!("Expected Run command"),
+        }
     }
 
     #[test]
-    fn test_basic_args_with_separator() {
-        // With -- (still works)
-        let args = Args::parse_from(["nono", "--allow", ".", "--", "echo", "hello"]);
-        assert_eq!(args.allow.len(), 1);
-        assert_eq!(args.command, vec!["echo", "hello"]);
+    fn test_run_with_separator() {
+        let cli = Cli::parse_from(["nono", "run", "--allow", ".", "--", "echo", "hello"]);
+        match cli.command {
+            Commands::Run(args) => {
+                assert_eq!(args.allow.len(), 1);
+                assert_eq!(args.command, vec!["echo", "hello"]);
+            }
+            _ => panic!("Expected Run command"),
+        }
     }
 
     #[test]
-    fn test_multiple_paths() {
-        let args = Args::parse_from([
+    fn test_run_multiple_paths() {
+        let cli = Cli::parse_from([
             "nono",
+            "run",
             "--allow",
             "./src",
             "--allow",
@@ -128,7 +169,35 @@ mod tests {
             "/usr/share",
             "ls",
         ]);
-        assert_eq!(args.allow.len(), 2);
-        assert_eq!(args.read.len(), 1);
+        match cli.command {
+            Commands::Run(args) => {
+                assert_eq!(args.allow.len(), 2);
+                assert_eq!(args.read.len(), 1);
+            }
+            _ => panic!("Expected Run command"),
+        }
+    }
+
+    #[test]
+    fn test_why_basic() {
+        let cli = Cli::parse_from(["nono", "why", "~/.ssh/id_rsa"]);
+        match cli.command {
+            Commands::Why(args) => {
+                assert_eq!(args.path, PathBuf::from("~/.ssh/id_rsa"));
+            }
+            _ => panic!("Expected Why command"),
+        }
+    }
+
+    #[test]
+    fn test_why_with_suggest() {
+        let cli = Cli::parse_from(["nono", "why", "-s", "/tmp/foo"]);
+        match cli.command {
+            Commands::Why(args) => {
+                assert!(args.suggest);
+                assert_eq!(args.path, PathBuf::from("/tmp/foo"));
+            }
+            _ => panic!("Expected Why command"),
+        }
     }
 }

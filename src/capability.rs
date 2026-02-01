@@ -1,4 +1,4 @@
-use crate::cli::Args;
+use crate::cli::RunArgs;
 use crate::error::{NonoError, Result};
 use crate::profile::{self, Profile};
 use serde::{Deserialize, Serialize};
@@ -128,7 +128,7 @@ impl CapabilitySet {
     }
 
     /// Build capabilities from CLI arguments
-    pub fn from_args(args: &Args) -> Result<Self> {
+    pub fn from_args(args: &RunArgs) -> Result<Self> {
         let mut caps = Self::new();
 
         // Process directory permissions
@@ -170,7 +170,7 @@ impl CapabilitySet {
     }
 
     /// Build capabilities from a profile, with CLI overrides
-    pub fn from_profile(profile: &Profile, workdir: &Path, args: &Args) -> Result<Self> {
+    pub fn from_profile(profile: &Profile, workdir: &Path, args: &RunArgs) -> Result<Self> {
         let mut caps = Self::new();
 
         // Helper to process profile paths and add capabilities
@@ -401,7 +401,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().to_path_buf();
 
-        let args = Args {
+        let args = RunArgs {
             allow: vec![path.clone()],
             read: vec![],
             write: vec![],
@@ -430,7 +430,7 @@ mod tests {
         let file_path = dir.path().join("test.txt");
         fs::write(&file_path, "test").unwrap();
 
-        let args = Args {
+        let args = RunArgs {
             allow: vec![dir.path().to_path_buf()],
             read: vec![],
             write: vec![],
@@ -460,7 +460,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().to_path_buf();
 
-        let args = Args {
+        let args = RunArgs {
             allow: vec![path.clone()],
             read: vec![],
             write: vec![],
