@@ -50,8 +50,20 @@ const SYSTEM_READ_PATHS: &[&str] = &[
     "/usr/share/terminfo",
     "/lib/terminfo",
     "/etc/terminfo",
-    // Device files
-    "/dev",
+    // Device files - only safe, commonly needed devices
+    // (NOT /dev as a whole, which would expose /dev/sda, /dev/mem, etc.)
+    "/dev/null",
+    "/dev/zero",
+    "/dev/random",
+    "/dev/urandom",
+    "/dev/full",
+    "/dev/tty",
+    "/dev/console",
+    "/dev/stdin",
+    "/dev/stdout",
+    "/dev/stderr",
+    "/dev/fd",
+    "/dev/pts",
     // Proc filesystem (needed for many operations)
     "/proc",
     // Sys filesystem (some tools need it)
