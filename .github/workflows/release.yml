@@ -138,7 +138,8 @@ jobs:
           # Update formula version and checksums
           cd homebrew-nono
           sed -i "s/version \".*\"/version \"${VERSION}\"/" Formula/nono.rb
-          sed -i "s|releases/download/v[^/]*/|releases/download/v${VERSION}/|g" Formula/nono.rb
+          # Update URLs (both directory path and filename)
+          sed -i "s|releases/download/v[^/]*/nono-v[^-]*-|releases/download/v${VERSION}/nono-v${VERSION}-|g" Formula/nono.rb
           # Update ARM64 SHA (first sha256 in on_arm block)
           sed -i "/on_arm/,/end/{s/sha256 \"[^\"]*\"/sha256 \"${ARM64_SHA}\"/}" Formula/nono.rb
           # Update x64 SHA (sha256 in on_intel block)
