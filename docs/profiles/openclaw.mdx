@@ -19,6 +19,41 @@ nono's kernel-enforced sandbox ensures that even if an agent is compromised, it 
 nono has already proven capable of stopping some nasty reported CVEs from exploiting live systems, as its protections are impossible to overide
 </Note>
 
+## Already Using Containers?
+
+If you're running OpenClaw in Docker or Podman, you already have solid isolation. Containers provide process isolation, resource limits, and filesystem separation that protect your host system.
+
+That said, there are tradeoffs to consider:
+
+| Aspect | nono | Containers |
+|--------|------|------------|
+| Startup overhead | ~0ms | ~100-500ms |
+| Host file access | Direct | Requires volume mounts |
+| Credential blocking | Automatic | Manual (don't mount ~/.ssh, etc.) |
+| Resource limits | No | Yes |
+| Environment isolation | No | Yes |
+
+**When containers make more sense:**
+- You need CPU/memory limits to prevent runaway agents
+- You want a reproducible environment across machines
+- You're already using container orchestration (Kubernetes, etc.)
+
+**When nono makes more sense:**
+- You need fast startup for interactive use
+- You want to work directly on host files without volume mount complexity
+- You want automatic credential protection without manual configuration
+- You want protection from destructive commands like `rm -rf`, `dd`, and `chmod`
+
+**For maximum security, use both:**
+
+```bash
+# nono inside a container - defense in depth
+docker run -v $(pwd):/work my-openclaw-image \
+  nono run --profile openclaw -- openclaw gateway
+```
+
+See [nono vs Containers](/security/vs-containers) for a detailed comparison.
+
 ## Built-in Profile
 
 nono includes a built-in `openclaw` profile that you can use immediately without any configuration:
