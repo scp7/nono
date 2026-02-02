@@ -2,7 +2,7 @@
 
 ## Supported Versions
 
-We are currently in alpha, so do not have specific versions, but we will once the first GA release is made.
+We are currently in alpha, so do not have specific versions, but we will once the first GA release is made. So security fixes are on a best efforts basis.
 
 ---
 
