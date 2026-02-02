@@ -2,6 +2,42 @@
 
 This document describes the release process for nono, including signing procedures and checklist.
 
+## Quick Release Process
+
+1. **Bump version** in `Cargo.toml`
+2. **Update CHANGELOG.md** with new version section
+3. **Sign security lists** (if changed):
+   ```bash
+   minisign -Sm data/security-lists.toml -s /path/to/release-key.key
+   git add data/security-lists.toml.minisig
+   ```
+4. **Commit and push**:
+   ```bash
+   git add Cargo.toml CHANGELOG.md
+   git commit -m "Release vX.Y.Z"
+   git push
+   ```
+5. **Create and push tag**:
+   ```bash
+   git tag vX.Y.Z
+   git push origin vX.Y.Z
+   ```
+6. **Wait for CI** - GitHub Actions will automatically:
+   - Build binaries (Linux x64, macOS Intel, macOS ARM)
+   - Create draft GitHub release with checksums
+   - Publish to crates.io (`nono-rs`)
+   - Update Homebrew formula (`lukehinds/nono`)
+
+7. **Publish the release** - Go to GitHub releases and publish the draft
+
+## Distribution Channels
+
+| Channel | Name | Install Command |
+|---------|------|-----------------|
+| crates.io | `nono-rs` | `cargo install nono-rs` |
+| Homebrew | `lukehinds/nono` | `brew tap lukehinds/nono && brew install nono` |
+| GitHub Releases | - | Download binary from releases page |
+
 ## Prerequisites
 
 ### Required Tools

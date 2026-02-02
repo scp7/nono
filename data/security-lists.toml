@@ -1,13 +1,10 @@
 # nono Security Lists
 #
 # This file contains the security-critical blocklists for nono sandbox.
-# It is embedded in the binary at compile time and verified via minisign signature.
-#
-# DO NOT EDIT without updating the signature!
 
 [meta]
 version = 1
-schema_version = "1.0"
+schema_version = "0.2.0"
 # updated field set during signing
 
 [sensitive_paths]
