@@ -56,6 +56,42 @@ fn expand_home(path: &str) -> String {
     path.to_string()
 }
 
+/// Collect parent directories that need metadata access for path resolution.
+///
+/// Programs need to lstat() each path component when resolving paths.
+/// For example, to access /Users/luke/.claude, Node.js needs to lstat:
+/// - /Users
+/// - /Users/luke
+///
+/// This function returns those parent directories so we can allow metadata
+/// (but not data) access to them.
+fn collect_parent_dirs(caps: &CapabilitySet) -> std::collections::HashSet<String> {
+    let mut parents = std::collections::HashSet::new();
+
+    for cap in &caps.fs {
+        let path = cap.resolved.as_path();
+        let mut current = path.parent();
+
+        // Walk up the directory tree, collecting each parent
+        while let Some(parent) = current {
+            let parent_str = parent.to_string_lossy().to_string();
+
+            // Stop at root
+            if parent_str == "/" || parent_str.is_empty() {
+                break;
+            }
+
+            // If already present, ancestors were processed too - early exit
+            if !parents.insert(parent_str) {
+                break;
+            }
+            current = parent.parent();
+        }
+    }
+
+    parents
+}
+
 /// Generate a Seatbelt profile from capabilities
 fn generate_profile(caps: &CapabilitySet) -> String {
     let mut profile = String::new();
@@ -66,7 +102,7 @@ fn generate_profile(caps: &CapabilitySet) -> String {
     // Start with deny default, but we'll allow many things needed for basic operation
     profile.push_str("(deny default)\n");
 
-    // Debug: log denials (uncomment for debugging)
+    // Debug: log denials to Console.app (enable for debugging)
     // profile.push_str("(debug deny)\n");
 
     // Allow all process operations
@@ -98,6 +134,22 @@ fn generate_profile(caps: &CapabilitySet) -> String {
     // Files like /etc/passwd remain blocked unless explicitly allowed.
     profile.push_str("(allow file-read* (literal \"/\"))\n");
 
+    // Allow metadata access to parent directories of granted paths.
+    // This is required for path resolution - programs need to lstat() each path component.
+    // Example: to access /Users/luke/.claude, we need to stat /Users and /Users/luke.
+    // Using file-read-metadata (not file-read*) allows stat/lstat but blocks:
+    // - file-read-data: reading directory contents (ls, readdir)
+    // - file-read*: all read operations including content
+    // This prevents directory listing of parent dirs while allowing path traversal.
+    let parent_dirs = collect_parent_dirs(caps);
+    for parent in &parent_dirs {
+        let escaped = parent.replace('\\', "\\\\").replace('"', "\\\"");
+        profile.push_str(&format!(
+            "(allow file-read-metadata (literal \"{}\"))\n",
+            escaped
+        ));
+    }
+
     // Allow mapping executables into memory (required for dyld to load binaries)
     // Without this, exec() will abort even if file-read* is allowed
     profile.push_str("(allow file-map-executable)\n");
@@ -121,6 +173,9 @@ fn generate_profile(caps: &CapabilitySet) -> String {
 
     // Allow file ioctl for TTY
     profile.push_str("(allow file-ioctl)\n");
+
+    // Allow pseudo-terminal operations (needed for interactive CLIs)
+    profile.push_str("(allow pseudo-tty)\n");
 
     // 3. Add user-specified filesystem capabilities for reads
     for cap in &caps.fs {
@@ -486,5 +541,55 @@ mod tests {
         assert_eq!(expand_home("~/Library"), "/Users/testuser/Library");
         assert_eq!(expand_home("~"), "/Users/testuser");
         assert_eq!(expand_home("/absolute/path"), "/absolute/path");
+    }
+
+    #[test]
+    fn test_collect_parent_dirs() {
+        let mut caps = CapabilitySet::default();
+        caps.fs.push(FsCapability {
+            original: PathBuf::from("/Users/test/.claude"),
+            resolved: PathBuf::from("/Users/test/.claude"),
+            access: FsAccess::ReadWrite,
+            is_file: false,
+        });
+
+        let parents = collect_parent_dirs(&caps);
+
+        // Should include parent directories but not root
+        assert!(parents.contains("/Users"), "Should include /Users");
+        assert!(
+            parents.contains("/Users/test"),
+            "Should include /Users/test"
+        );
+        assert!(!parents.contains("/"), "Should not include root");
+    }
+
+    #[test]
+    fn test_profile_allows_parent_metadata() {
+        let mut caps = CapabilitySet::default();
+        caps.fs.push(FsCapability {
+            original: PathBuf::from("/Users/test/.claude"),
+            resolved: PathBuf::from("/Users/test/.claude"),
+            access: FsAccess::ReadWrite,
+            is_file: false,
+        });
+
+        let profile = generate_profile(&caps);
+
+        // Should allow METADATA access (not full read) to parent directories for path resolution
+        // This allows stat/lstat but blocks readdir (directory listing)
+        assert!(
+            profile.contains("(allow file-read-metadata (literal \"/Users\"))"),
+            "Profile should allow metadata on /Users"
+        );
+        assert!(
+            profile.contains("(allow file-read-metadata (literal \"/Users/test\"))"),
+            "Profile should allow metadata on /Users/test"
+        );
+        // Should NOT use file-read* for parent directories (would allow directory listing)
+        assert!(
+            !profile.contains("(allow file-read* (literal \"/Users\"))"),
+            "Profile should NOT allow full read on parent /Users"
+        );
     }
 }

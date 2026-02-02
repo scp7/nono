@@ -247,10 +247,12 @@ terminfo = [
 # System paths and their symlink targets
 # macOS uses /private for actual paths with symlinks from root
 # Also need /System/Volumes for modern macOS (10.15+) which uses APFS volumes
+# /tmp is a symlink to /private/tmp - need both for path resolution
 system = [
     "/var",
     "/private/var",
     "/private",
+    "/tmp",
     "/System/Volumes",
     "/Applications",
     "/cores",
@@ -264,6 +266,18 @@ user_library = [
     "~/Library/Caches",
     "~/Library/Logs",
     "~/Library/Preferences",
+]
+
+# User-local executables and version managers
+# These paths contain user-installed tools and version managers
+user_local = [
+    "~/.local/bin",
+    "~/.local/share",
+    "~/.local/state",
+    "~/.cargo/bin",
+    "~/.rustup",
+    "~/.nvm",
+    "~/.fnm",
 ]
 
 # macOS writable system paths (needed for many tools)

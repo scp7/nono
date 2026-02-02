@@ -139,6 +139,8 @@ pub struct MacosSystemPaths {
     #[serde(default)]
     pub user_library: Vec<String>,
     #[serde(default)]
+    pub user_local: Vec<String>,
+    #[serde(default)]
     pub writable: Vec<String>,
 }
 
@@ -211,6 +213,7 @@ impl SecurityLists {
             paths.extend(self.system_read_paths.macos.terminfo.iter().cloned());
             paths.extend(self.system_read_paths.macos.system.iter().cloned());
             paths.extend(self.system_read_paths.macos.user_library.iter().cloned());
+            paths.extend(self.system_read_paths.macos.user_local.iter().cloned());
         }
 
         paths
