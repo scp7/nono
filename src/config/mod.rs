@@ -269,6 +269,8 @@ pub fn check_blocked_command(
 /// Check if a path is in the sensitive paths list (for `nono why` command)
 /// Returns Some(reason) if blocked, None if not in list
 pub fn check_sensitive_path(path_str: &str) -> Option<&'static str> {
+    use security_lists::sensitive_paths_by_category;
+
     let home = std::env::var("HOME").unwrap_or_default();
     let expanded = if path_str.starts_with("~/") {
         path_str.replacen("~", &home, 1)
@@ -278,57 +280,23 @@ pub fn check_sensitive_path(path_str: &str) -> Option<&'static str> {
         path_str.to_string()
     };
 
-    let sensitive_paths = get_sensitive_paths();
+    // Load security lists and get paths organized by category
+    let lists = match embedded::load_security_lists() {
+        Ok(l) => l,
+        Err(_) => return None,
+    };
 
-    for sensitive in &sensitive_paths {
-        let expanded_sensitive = sensitive.replace('~', &home);
+    let categories = sensitive_paths_by_category(&lists);
 
-        if expanded == expanded_sensitive
-            || expanded.starts_with(&format!("{}/", expanded_sensitive))
-        {
-            // Return the reason category based on path pattern
-            if sensitive.contains("ssh") {
-                return Some("SSH keys and config");
-            } else if sensitive.contains("aws") {
-                return Some("AWS credentials");
-            } else if sensitive.contains("gcloud") || sensitive.contains("gcp") {
-                return Some("Google Cloud credentials");
-            } else if sensitive.contains("azure") {
-                return Some("Azure credentials");
-            } else if sensitive.contains("kube") {
-                return Some("Kubernetes config");
-            } else if sensitive.contains("docker") {
-                return Some("Docker config (may contain registry credentials)");
-            } else if sensitive.contains("gnupg") {
-                return Some("GnuPG keys");
-            } else if sensitive.contains("Keychain") {
-                return Some("macOS Keychain");
-            } else if sensitive.contains("password") || sensitive.contains("1password") {
-                return Some("Password manager data");
-            } else if sensitive.contains("credentials")
-                || sensitive.contains("secrets")
-                || sensitive.contains("keys")
+    // Check each category's paths
+    for (category_name, paths) in categories {
+        for sensitive in paths {
+            let expanded_sensitive = sensitive.replace('~', &home);
+
+            if expanded == expanded_sensitive
+                || expanded.starts_with(&format!("{}/", expanded_sensitive))
             {
-                return Some("Credential storage");
-            } else if sensitive.contains("rc")
-                || sensitive.contains("profile")
-                || sensitive.contains("env")
-                || sensitive.contains("fish")
-            {
-                return Some("Shell configuration (may contain API keys)");
-            } else if sensitive.contains("history") {
-                return Some("Command history (may contain sensitive commands)");
-            } else if sensitive.contains("npmrc")
-                || sensitive.contains("git-credentials")
-                || sensitive.contains("netrc")
-            {
-                return Some("Authentication credentials");
-            } else if sensitive.contains("terraform") || sensitive.contains("vault") {
-                return Some("Infrastructure secrets");
-            } else if sensitive.contains("pki") {
-                return Some("PKI certificates and keys");
-            } else {
-                return Some("Sensitive data");
+                return Some(category_name);
             }
         }
     }

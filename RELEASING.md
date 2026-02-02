@@ -23,7 +23,7 @@ The release signing key should be stored securely (ideally in an HSM or secure e
 
 ```bash
 # Generate the author keypair
-# Store the secret key securely - this is the root of trust!
+# Store the secret key securely (hardware token, encrypted storage, etc.)
 minisign -G -p release-key.pub -s release-key.key
 
 # The public key will look like:
@@ -170,26 +170,6 @@ Configure these secrets in GitHub Actions:
 | `MINISIGN_SECRET_KEY` | Base64-encoded secret key |
 | `MINISIGN_PASSWORD` | Password for the secret key |
 | `HOMEBREW_TAP_TOKEN` | Token for updating Homebrew formula |
-
-### Example Signing Step (GitHub Actions)
-
-```yaml
-- name: Sign Release Binaries
-  env:
-    MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
-    MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
-  run: |
-    # Decode and write secret key
-    echo "$MINISIGN_SECRET_KEY" | base64 -d > /tmp/release.key
-
-    # Sign each binary
-    for binary in target/release/nono-*; do
-      echo "$MINISIGN_PASSWORD" | minisign -Sm "$binary" -s /tmp/release.key -t "file:$(basename $binary)"
-    done
-
-    # Clean up
-    rm /tmp/release.key
-```
 
 ## Key Rotation
 
