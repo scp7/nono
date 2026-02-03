@@ -15,6 +15,7 @@ pub mod version;
 use crate::error::Result;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use tracing::warn;
 
 // ============================================================================
 // Phase 4 infrastructure: Override system (implemented, not yet integrated)
@@ -210,7 +211,13 @@ pub fn user_state_dir() -> Option<PathBuf> {
 pub fn get_sensitive_paths() -> Vec<String> {
     match embedded::load_security_lists() {
         Ok(lists) => lists.all_sensitive_paths().into_iter().collect(),
-        Err(_) => Vec::new(),
+        Err(err) => {
+            warn!(
+                "Failed to load embedded security lists for sensitive paths: {}",
+                err
+            );
+            Vec::new()
+        }
     }
 }
 
@@ -218,7 +225,13 @@ pub fn get_sensitive_paths() -> Vec<String> {
 pub fn get_dangerous_commands() -> HashSet<String> {
     match embedded::load_security_lists() {
         Ok(lists) => lists.all_dangerous_commands(),
-        Err(_) => HashSet::new(),
+        Err(err) => {
+            warn!(
+                "Failed to load embedded security lists for dangerous commands: {}",
+                err
+            );
+            HashSet::new()
+        }
     }
 }
 
@@ -227,7 +240,13 @@ pub fn get_dangerous_commands() -> HashSet<String> {
 pub fn get_system_read_paths() -> Vec<String> {
     match embedded::load_security_lists() {
         Ok(lists) => lists.system_paths_for_platform(),
-        Err(_) => Vec::new(),
+        Err(err) => {
+            warn!(
+                "Failed to load embedded security lists for system read paths: {}",
+                err
+            );
+            Vec::new()
+        }
     }
 }
 
@@ -283,7 +302,13 @@ pub fn check_sensitive_path(path_str: &str) -> Option<&'static str> {
     // Load security lists and get paths organized by category
     let lists = match embedded::load_security_lists() {
         Ok(l) => l,
-        Err(_) => return None,
+        Err(err) => {
+            warn!(
+                "Failed to load embedded security lists while checking sensitive path: {}",
+                err
+            );
+            return None;
+        }
     };
 
     let categories = sensitive_paths_by_category(&lists);
