@@ -201,28 +201,6 @@ fn run_shell(args: ShellArgs, silent: bool) -> Result<()> {
 
     let shell_str = shell_path.to_string_lossy().to_string();
 
-    if let Some(blocked) =
-        config::check_blocked_command(&shell_str, &caps.allowed_commands, &caps.blocked_commands)
-    {
-        return Err(NonoError::BlockedCommand {
-            command: blocked,
-            reason: "This shell is blocked by default due to destructive potential. \
-                     Use --allow-command to override if you understand the risks."
-                .to_string(),
-        });
-    }
-
-    if args.sandbox.dry_run {
-        if !loaded_secrets.is_empty() && !silent {
-            eprintln!(
-                "  Would inject {} secret(s) as environment variables",
-                loaded_secrets.len()
-            );
-        }
-        output::print_dry_run(&vec![shell_str.clone()], silent);
-        return Ok(());
-    }
-
     execute_sandboxed(vec![shell_str], &args.sandbox, caps, loaded_secrets, silent, true)
 }
 
