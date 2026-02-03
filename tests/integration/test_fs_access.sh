@@ -58,14 +58,7 @@ expect_success "write file to granted directory" \
     "$NONO_BIN" run --allow "$TMPDIR/allowed" -- sh -c "echo 'new content' > '$TMPDIR/allowed/new.txt'"
 
 # Verify file was created
-if [[ -f "$TMPDIR/allowed/new.txt" ]]; then
-    echo -e "  ${GREEN}PASS${NC}: file was actually created"
-    TESTS_PASSED=$((TESTS_PASSED + 1))
-else
-    echo -e "  ${RED}FAIL${NC}: file was not created"
-    TESTS_FAILED=$((TESTS_FAILED + 1))
-fi
-TESTS_RUN=$((TESTS_RUN + 1))
+run_test "file was actually created" 0 test -f "$TMPDIR/allowed/new.txt"
 
 # Note: Write denial within TMPDIR doesn't work on macOS because /var/folders
 # is a system-writable path. Write denial to system paths is tested in

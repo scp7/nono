@@ -119,6 +119,22 @@ pub fn apply(caps: &CapabilitySet) -> Result<()> {
         }
     }
 
+    // Add read access to current working directory
+    // Many programs need cwd access to function properly
+    if let Ok(cwd) = std::env::current_dir() {
+        if cwd.exists() {
+            match PathFd::new(&cwd) {
+                Ok(path_fd) => {
+                    debug!("Adding cwd read rule: {}", cwd.display());
+                    ruleset = ruleset.add_rule(PathBeneath::new(path_fd, read_access))?;
+                }
+                Err(e) => {
+                    debug!("Skipping cwd {} (cannot open: {})", cwd.display(), e);
+                }
+            }
+        }
+    }
+
     // Add rules for each user-specified filesystem capability
     for cap in &caps.fs {
         let access = access_to_landlock(cap.access, TARGET_ABI);

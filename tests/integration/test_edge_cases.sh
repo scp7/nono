@@ -167,15 +167,7 @@ expect_output_contains "dry-run shows granted paths" "$TMPDIR" \
 expect_success "dry-run with touch doesn't create file" \
     "$NONO_BIN" run --dry-run --allow "$TMPDIR" -- touch "$TMPDIR/should_not_exist.txt"
 
-if [[ ! -f "$TMPDIR/should_not_exist.txt" ]]; then
-    echo -e "  ${GREEN}PASS${NC}: dry-run did not execute command"
-    TESTS_PASSED=$((TESTS_PASSED + 1))
-else
-    echo -e "  ${RED}FAIL${NC}: dry-run executed command!"
-    rm -f "$TMPDIR/should_not_exist.txt"
-    TESTS_FAILED=$((TESTS_FAILED + 1))
-fi
-TESTS_RUN=$((TESTS_RUN + 1))
+run_test "dry-run did not execute command" 1 test -f "$TMPDIR/should_not_exist.txt"
 
 # =============================================================================
 # Profile Workdir (for variable expansion)
@@ -205,14 +197,7 @@ expect_success "read from read-only, write to write-only" \
     sh -c "cat '$TMPDIR/mixed_read/file.txt' && echo 'written' > '$TMPDIR/mixed_write/output.txt'"
 
 # Verify write worked
-if [[ -f "$TMPDIR/mixed_write/output.txt" ]]; then
-    echo -e "  ${GREEN}PASS${NC}: write to write-only directory succeeded"
-    TESTS_PASSED=$((TESTS_PASSED + 1))
-else
-    echo -e "  ${RED}FAIL${NC}: write to write-only directory failed"
-    TESTS_FAILED=$((TESTS_FAILED + 1))
-fi
-TESTS_RUN=$((TESTS_RUN + 1))
+run_test "write to write-only directory succeeded" 0 test -f "$TMPDIR/mixed_write/output.txt"
 
 # =============================================================================
 # Summary

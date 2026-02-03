@@ -33,14 +33,7 @@ expect_failure "rm blocked by default" \
     "$NONO_BIN" run --allow "$TMPDIR" -- rm "$TMPDIR/deleteme.txt"
 
 # Verify file still exists
-if [[ -f "$TMPDIR/deleteme.txt" ]]; then
-    echo -e "  ${GREEN}PASS${NC}: file was not deleted (rm was blocked)"
-    TESTS_PASSED=$((TESTS_PASSED + 1))
-else
-    echo -e "  ${RED}FAIL${NC}: file was deleted despite rm being blocked!"
-    TESTS_FAILED=$((TESTS_FAILED + 1))
-fi
-TESTS_RUN=$((TESTS_RUN + 1))
+run_test "file was not deleted (rm was blocked)" 0 test -f "$TMPDIR/deleteme.txt"
 
 # rmdir is blocked
 mkdir -p "$TMPDIR/testdir"
@@ -77,14 +70,7 @@ expect_success "rm allowed with --allow-command rm" \
     "$NONO_BIN" run --allow "$TMPDIR" --allow-command rm -- rm "$TMPDIR/todelete.txt"
 
 # Verify file was deleted
-if [[ ! -f "$TMPDIR/todelete.txt" ]]; then
-    echo -e "  ${GREEN}PASS${NC}: file successfully deleted with --allow-command rm"
-    TESTS_PASSED=$((TESTS_PASSED + 1))
-else
-    echo -e "  ${RED}FAIL${NC}: file was not deleted even with --allow-command rm"
-    TESTS_FAILED=$((TESTS_FAILED + 1))
-fi
-TESTS_RUN=$((TESTS_RUN + 1))
+run_test "file successfully deleted with --allow-command rm" 1 test -f "$TMPDIR/todelete.txt"
 
 # Multiple command overrides
 echo "test1" > "$TMPDIR/multi1.txt"
