@@ -1,6 +1,4 @@
 # OpenClaw messaging gateway
-#
-# Signed by nono-project. Signature verification required.
 
 [meta]
 name = "openclaw"
@@ -9,10 +7,15 @@ description = "OpenClaw messaging gateway"
 author = "nono-project"
 min_nono_version = "0.2.0"
 
+[workdir]
+# Node.js requires read access to CWD at startup (uv_cwd)
+access = "read"
+
 [filesystem]
 allow = [
     "$HOME/.openclaw",
     "$HOME/.config/openclaw",
+    "$HOME/.local",
     "$TMPDIR/openclaw-$UID",
 ]
 read = []

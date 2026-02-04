@@ -1,6 +1,5 @@
 # OpenCode AI coding assistant
 #
-# Signed by nono-project. Signature verification required.
 
 [meta]
 name = "opencode"
@@ -9,8 +8,12 @@ description = "OpenCode AI coding assistant"
 author = "nono-project"
 min_nono_version = "0.2.0"
 
+[workdir]
+# Agent needs read+write access; Node.js also requires read for uv_cwd at startup
+access = "readwrite"
+
 [filesystem]
-allow = ["$WORKDIR"]
+allow = []
 read = ["$HOME/.opencode"]
 write = []
 

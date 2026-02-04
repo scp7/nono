@@ -6,7 +6,9 @@
 
 use super::security_lists::SecurityLists;
 use crate::error::{NonoError, Result};
-use crate::profile::{FilesystemConfig, NetworkConfig, Profile, ProfileMeta, SecretsConfig};
+use crate::profile::{
+    FilesystemConfig, NetworkConfig, Profile, ProfileMeta, SecretsConfig, WorkdirConfig,
+};
 
 /// Embedded security lists (compiled into binary by build.rs)
 const EMBEDDED_SECURITY_LISTS: &str =
@@ -70,6 +72,8 @@ fn parse_profile_toml(content: &str) -> Result<Profile> {
         commands: CommandsConfig,
         #[serde(default)]
         secrets: SecretsConfig,
+        #[serde(default)]
+        workdir: WorkdirConfig,
     }
 
     #[derive(serde::Deserialize)]
@@ -138,6 +142,7 @@ fn parse_profile_toml(content: &str) -> Result<Profile> {
         },
         network: toml_profile.network,
         secrets: toml_profile.secrets,
+        workdir: toml_profile.workdir,
     })
 }
 

@@ -2,7 +2,10 @@
 //!
 //! These profiles are trusted by default and don't require --trust-unsigned.
 
-use super::{FilesystemConfig, NetworkConfig, Profile, ProfileMeta, SecretsConfig};
+use super::{
+    FilesystemConfig, NetworkConfig, Profile, ProfileMeta, SecretsConfig, WorkdirAccess,
+    WorkdirConfig,
+};
 
 /// Get a built-in profile by name
 pub fn get_builtin(name: &str) -> Option<Profile> {
@@ -10,7 +13,6 @@ pub fn get_builtin(name: &str) -> Option<Profile> {
         "claude-code" => Some(claude_code()),
         "openclaw" => Some(openclaw()),
         "opencode" => Some(opencode()),
-        "cargo-build" => Some(cargo_build()),
         _ => None,
     }
 }
@@ -22,7 +24,6 @@ pub fn list_builtin() -> Vec<String> {
         "claude-code".to_string(),
         "openclaw".to_string(),
         "opencode".to_string(),
-        "cargo-build".to_string(),
     ]
 }
 
@@ -37,9 +38,8 @@ fn claude_code() -> Profile {
             signature: None,
         },
         filesystem: FilesystemConfig {
-            // WORKDIR: where the agent works on code
             // ~/.claude: agent state, debug logs, projects, etc.
-            allow: vec!["$WORKDIR".to_string(), "$HOME/.claude".to_string()],
+            allow: vec!["$HOME/.claude".to_string()],
             read: vec![],
             write: vec![],
             // ~/.claude.json: agent writes settings/state here
@@ -49,6 +49,9 @@ fn claude_code() -> Profile {
         },
         network: NetworkConfig { block: false },
         secrets: SecretsConfig::default(),
+        workdir: WorkdirConfig {
+            access: WorkdirAccess::ReadWrite,
+        },
     }
 }
 
@@ -66,6 +69,7 @@ fn openclaw() -> Profile {
             allow: vec![
                 "$HOME/.openclaw".to_string(),
                 "$HOME/.config/openclaw".to_string(),
+                "$HOME/.local".to_string(),
                 "$TMPDIR/openclaw-$UID".to_string(),
             ],
             read: vec![],
@@ -76,6 +80,9 @@ fn openclaw() -> Profile {
         },
         network: NetworkConfig { block: false },
         secrets: SecretsConfig::default(),
+        workdir: WorkdirConfig {
+            access: WorkdirAccess::Read,
+        },
     }
 }
 
@@ -91,7 +98,6 @@ fn opencode() -> Profile {
         },
         filesystem: FilesystemConfig {
             allow: vec![
-                "$WORKDIR".to_string(),
                 "$HOME/.config/opencode".to_string(),
                 "$HOME/.cache/opencode".to_string(),
                 "$HOME/.local/share/opencode".to_string(),
@@ -104,42 +110,24 @@ fn opencode() -> Profile {
         },
         network: NetworkConfig { block: false },
         secrets: SecretsConfig::default(),
-    }
-}
-
-/// Rust cargo build (no network)
-fn cargo_build() -> Profile {
-    Profile {
-        meta: ProfileMeta {
-            name: "cargo-build".to_string(),
-            version: "1.0.0".to_string(),
-            description: Some("Rust cargo build (no network)".to_string()),
-            author: Some("nono-project".to_string()),
-            signature: None,
+        workdir: WorkdirConfig {
+            access: WorkdirAccess::ReadWrite,
         },
-        filesystem: FilesystemConfig {
-            allow: vec!["$WORKDIR".to_string()],
-            read: vec!["$HOME/.cargo".to_string(), "$HOME/.rustup".to_string()],
-            write: vec![],
-            allow_file: vec![],
-            read_file: vec![],
-            write_file: vec![],
-        },
-        network: NetworkConfig { block: true },
-        secrets: SecretsConfig::default(),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::profile::WorkdirAccess;
 
     #[test]
     fn test_get_builtin_claude_code() {
         let profile = get_builtin("claude-code").unwrap();
         assert_eq!(profile.meta.name, "claude-code");
         assert!(!profile.network.block); // network allowed
-        assert!(profile.filesystem.allow.contains(&"$WORKDIR".to_string()));
+        assert_eq!(profile.workdir.access, WorkdirAccess::ReadWrite);
+        assert!(!profile.filesystem.allow.contains(&"$WORKDIR".to_string()));
     }
 
     #[test]
@@ -154,13 +142,6 @@ mod tests {
     }
 
     #[test]
-    fn test_get_builtin_cargo_build() {
-        let profile = get_builtin("cargo-build").unwrap();
-        assert_eq!(profile.meta.name, "cargo-build");
-        assert!(profile.network.block); // Network blocked for cargo-build
-    }
-
-    #[test]
     fn test_get_builtin_nonexistent() {
         assert!(get_builtin("nonexistent").is_none());
     }
@@ -171,6 +152,5 @@ mod tests {
         assert!(profiles.contains(&"claude-code".to_string()));
         assert!(profiles.contains(&"openclaw".to_string()));
         assert!(profiles.contains(&"opencode".to_string()));
-        assert!(profiles.contains(&"cargo-build".to_string()));
     }
 }

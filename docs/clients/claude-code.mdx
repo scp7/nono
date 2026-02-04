@@ -22,7 +22,7 @@ nono run --profile claude-code -- claude
 ```
 
 The built-in profile provides:
-- **Read+write access** to the current working directory (`$WORKDIR`)
+- **Read+write access** to the current working directory
 - **Read+write access** to `~/.claude` (agent state, debug logs, project config)
 - **Write access** to `~/.claude.json` (settings file)
 - **Network access** enabled (required for Anthropic API)
@@ -86,7 +86,7 @@ See [Secrets Management](/usage/secrets) for full documentation.
 
 ### Restrict to Specific Projects
 
-The built-in profile grants access to `$WORKDIR` (wherever you run the command). To limit access to a specific directory regardless of where you invoke it:
+The built-in profile grants access to the current working directory (wherever you run the command). To limit access to a specific directory regardless of where you invoke it:
 
 ```bash
 nono run --allow ~/projects/my-app --read ~/.claude -- claude

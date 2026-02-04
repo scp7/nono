@@ -166,6 +166,16 @@ impl CapabilitySet {
         !self.fs.is_empty()
     }
 
+    /// Check if the given path is already covered by an existing directory capability.
+    ///
+    /// Uses component-wise Path::starts_with() to prevent path traversal issues
+    /// (e.g., "/home" must not match "/homeevil").
+    pub fn path_covered(&self, path: &Path) -> bool {
+        self.fs
+            .iter()
+            .any(|cap| !cap.is_file && path.starts_with(&cap.resolved))
+    }
+
     /// Build capabilities from CLI arguments
     pub fn from_args(args: &RunArgs) -> Result<Self> {
         let mut caps = Self::new();
@@ -464,6 +474,7 @@ mod tests {
             block_command: vec![],
             secrets: None,
             profile: None,
+            allow_cwd: false,
             workdir: None,
             trust_unsigned: false,
             config: None,
@@ -496,6 +507,7 @@ mod tests {
             block_command: vec![],
             secrets: None,
             profile: None,
+            allow_cwd: false,
             workdir: None,
             trust_unsigned: false,
             config: None,
@@ -529,6 +541,7 @@ mod tests {
             block_command: vec![],
             secrets: None,
             profile: None,
+            allow_cwd: false,
             workdir: None,
             trust_unsigned: false,
             config: None,

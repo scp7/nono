@@ -411,9 +411,6 @@ impl SetupRunner {
             println!("  # Run any command with current directory access");
             println!("  nono run --allow . -- <command>");
             println!();
-            println!("  # Run cargo build with no network (reproducible builds)");
-            println!("  nono run --profile cargo-build -- cargo build");
-            println!();
             println!("  # Check why a sensitive path is blocked");
             println!("  nono why ~/.ssh/id_rsa");
             println!();

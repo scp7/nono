@@ -1,8 +1,11 @@
 //! CLI output styling for nono
 
-use crate::capability::CapabilitySet;
+use crate::capability::{CapabilitySet, FsAccess};
+use crate::error::{NonoError, Result};
 use colored::Colorize;
 use rand::seq::SliceRandom;
+use std::io::{BufRead, IsTerminal, Write};
+use std::path::Path;
 
 /// Hedgehog puns for the banner
 const QUOTES: &[&str] = &[
@@ -113,4 +116,43 @@ pub fn print_dry_run(command: &[String], silent: bool) {
         "Dry run mode - sandbox would be applied with above capabilities".yellow()
     );
     eprintln!("Command: {:?}", command);
+}
+
+/// Prompt the user to confirm sharing the current working directory.
+///
+/// Returns `Ok(true)` if user confirms, `Ok(false)` if user declines.
+/// Returns `Err(CwdPromptRequired)` if stdin is not a TTY.
+pub fn prompt_cwd_sharing(cwd: &Path, access: &FsAccess) -> Result<bool> {
+    let stdin = std::io::stdin();
+    if !stdin.is_terminal() {
+        return Err(NonoError::CwdPromptRequired);
+    }
+
+    let access_str = format!("{}", access);
+    let access_colored = match access {
+        FsAccess::Read => access_str.green(),
+        FsAccess::Write => access_str.yellow(),
+        FsAccess::ReadWrite => access_str.truecolor(204, 102, 0),
+    };
+
+    eprintln!(
+        "Current directory '{}' will be shared with {} access.",
+        cwd.display().to_string().white().bold(),
+        access_colored,
+    );
+    eprintln!(
+        "{}",
+        "tip: use --allow-cwd to skip this prompt".truecolor(150, 150, 150),
+    );
+    eprint!("  {} ", "Proceed? [y/N]:".white());
+    std::io::stderr().flush().ok();
+
+    let mut input = String::new();
+    stdin
+        .lock()
+        .read_line(&mut input)
+        .map_err(NonoError::CommandExecution)?;
+
+    let answer = input.trim().to_lowercase();
+    Ok(answer == "y" || answer == "yes")
 }
