@@ -97,6 +97,9 @@ pub enum NonoError {
         attempted: u64,
     },
 
+    #[error("Cannot prompt for CWD sharing in silent/non-interactive mode. Use --allow-cwd")]
+    CwdPromptRequired,
+
     // Environment variable validation errors
     #[error("Environment variable '{var}' validation failed: {reason}")]
     EnvVarValidation { var: String, reason: String },

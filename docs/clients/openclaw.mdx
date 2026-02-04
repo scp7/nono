@@ -3,7 +3,20 @@ title: OpenClaw
 description: Sandboxing OpenClaw gateway and agents with nono
 ---
 
-[OpenClaw](https://openclaw.ai) is a multi-channel AI agent platform that enables chat interactions across WhatsApp, Telegram, Discord, and Mattermost. Because OpenClaw agents process external messages and can execute code, running them under nono provides OS-level isolation that cannot be bypassed.
+[OpenClaw](https://openclaw.ai) is a multi-channel AI agent platform that enables chat interactions across WhatsApp, Telegram, Discord, and Mattermost. Running OpenClaw under nono provides OS-level isolation that cannot be bypassed.
+
+## Quick Start
+
+```bash
+nono run --profile openclaw -- openclaw gateway
+```
+
+The built-in `openclaw` profile provides:
+- **Read-only access** to the current working directory (Node.js requires this at startup)
+- **Read+write access** to `~/.openclaw` and `~/.config/openclaw` (agent config and state)
+- **Read+write access** to `~/.local` (OpenClaw data/state)
+- **Read+write access** to `$TMPDIR/openclaw-$UID` (temporary files)
+- **Network access** enabled (required for messaging APIs)
 
 ## Why Sandbox OpenClaw?
 
@@ -18,52 +31,6 @@ nono's kernel-enforced sandbox ensures that even if an agent is compromised, it 
 <Note>
 nono has already proven capable of stopping some nasty reported CVEs from exploiting live systems, as its protections are impossible to overide
 </Note>
-
-## Already Using Containers?
-
-If you're running OpenClaw in Docker or Podman, you already have solid isolation. Containers provide process isolation, resource limits, and filesystem separation that protect your host system.
-
-That said, there are tradeoffs to consider:
-
-| Aspect | nono | Containers |
-|--------|------|------------|
-| Startup overhead | ~0ms | ~100-500ms |
-| Host file access | Direct | Requires volume mounts |
-| Credential blocking | Automatic | Manual (don't mount ~/.ssh, etc.) |
-| Resource limits | No | Yes |
-| Environment isolation | No | Yes |
-
-**When containers make more sense:**
-- You need CPU/memory limits to prevent runaway agents
-- You want a reproducible environment across machines
-- You're already using container orchestration (Kubernetes, etc.)
-
-**When nono makes more sense:**
-- You need fast startup for interactive use
-- You want to work directly on host files without volume mount complexity
-- You want automatic credential protection without manual configuration
-- You want protection from destructive commands like `rm -rf`, `dd`, and `chmod`
-
-**For maximum security, use both:**
-
-```bash
-# nono inside a container - defense in depth
-docker run -v $(pwd):/work my-openclaw-image \
-  nono run --profile openclaw -- openclaw gateway
-```
-
-See [nono vs Containers](/security/vs-containers) for a detailed comparison.
-
-## Quick Start
-
-```bash
-nono run --profile openclaw -- openclaw gateway
-```
-
-The built-in profile provides:
-- **Read+write access** to `~/.openclaw` and `~/.config/openclaw` (agent config and state)
-- **Read+write access** to `$TMPDIR/openclaw-$UID` (temporary files)
-- **Network access** enabled (required for messaging APIs)
 
 ## Custom Profile
 
@@ -230,3 +197,38 @@ This configuration:
 - Reads agent code from `~/agents/my-agent`
 - Only allows writes to the workspace subdirectory
 - Loads `$TELEGRAM_BOT_TOKEN` and `$OPENAI_API_KEY` from the system keystore
+
+## Already Using Containers?
+
+If you're running OpenClaw in Docker or Podman, you already have solid isolation. Containers provide process isolation, resource limits, and filesystem separation that protect your host system.
+
+That said, there are tradeoffs to consider:
+
+| Aspect | nono | Containers |
+|--------|------|------------|
+| Startup overhead | ~0ms | ~100-500ms |
+| Host file access | Direct | Requires volume mounts |
+| Credential blocking | Automatic | Manual (don't mount ~/.ssh, etc.) |
+| Resource limits | No | Yes |
+| Environment isolation | No | Yes |
+
+**When containers make more sense:**
+- You need CPU/memory limits to prevent runaway agents
+- You want a reproducible environment across machines
+- You're already using container orchestration (Kubernetes, etc.)
+
+**When nono makes more sense:**
+- You need fast startup for interactive use
+- You want to work directly on host files without volume mount complexity
+- You want automatic credential protection without manual configuration
+- You want protection from destructive commands like `rm -rf`, `dd`, and `chmod`
+
+**For maximum security, use both:**
+
+```bash
+# nono inside a container - defense in depth
+docker run -v $(pwd):/work my-openclaw-image \
+  nono run --profile openclaw -- openclaw gateway
+```
+
+See [nono vs Containers](/security/vs-containers) for a detailed comparison.

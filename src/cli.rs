@@ -151,6 +151,11 @@ pub struct RunArgs {
     #[arg(long, short = 'p', value_name = "NAME")]
     pub profile: Option<String>,
 
+    /// Allow access to current working directory without prompting.
+    /// Access level determined by profile or defaults to read-only.
+    #[arg(long)]
+    pub allow_cwd: bool,
+
     /// Working directory for $WORKDIR expansion in profiles (defaults to current dir)
     #[arg(long, value_name = "DIR")]
     pub workdir: Option<PathBuf>,

@@ -1,6 +1,4 @@
 # Anthropic Claude Code CLI agent
-#
-# Signed by nono-project. Signature verification required.
 
 [meta]
 name = "claude-code"
@@ -9,10 +7,13 @@ description = "Anthropic Claude Code CLI agent"
 author = "nono-project"
 min_nono_version = "0.2.0"
 
+[workdir]
+# Agent needs full read+write access to the working directory
+access = "readwrite"
+
 [filesystem]
-# WORKDIR: where the agent works on code
 # ~/.claude: agent state, debug logs, projects, etc.
-allow = ["$WORKDIR", "$HOME/.claude"]
+allow = ["$HOME/.claude"]
 read = []
 write = []
 

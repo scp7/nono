@@ -3,10 +3,10 @@
   "theme": "mint",
   "name": "nono",
   "logo": {
-    "dark": "/assets/nono-mascot.png",
-    "light": "/assets/nono-mascot.png"
+    "dark": "/assets/logo.png",
+    "light": "/assets/logo.png"
   },
-  "favicon": "/assets/nono-mascot.png",
+  "favicon": "/assets/logo.png",
   "colors": {
     "primary": "#0D9373",
     "light": "#07C983",
@@ -37,9 +37,7 @@
           {
             "group": "Getting Started",
             "pages": [
-              "home",
-              "installation",
-              "troubleshooting"
+              "getting_started/installation"
             ]
           },
           {
@@ -47,17 +45,17 @@
             "pages": [
               "usage/index",
               "usage/secrets",
-              "usage/examples"
+              "usage/examples",
+              "usage/troubleshooting"
             ]
           },
           {
-            "group": "Client Guides",
+            "group": "Agents & Clients",
             "pages": [
-              "clients/index",
+              "clients/quickstart",
               "clients/claude-code",
               "clients/opencode",
-              "clients/openclaw",
-              "clients/cargo-build"
+              "clients/openclaw"
             ]
           },
           {

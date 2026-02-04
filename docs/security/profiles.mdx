@@ -200,24 +200,6 @@ block = false
 
 ---
 
-### cargo-build
-
-```toml
-[meta]
-name = "cargo-build"
-version = "1.0.0"
-description = "Rust cargo build (no network)"
-
-[filesystem]
-allow = ["$WORKDIR"]
-read = ["$HOME/.cargo", "$HOME/.rustup"]
-
-[network]
-block = true
-```
-
-**Grants:** Read+write to working directory, read-only access to Rust toolchain, network blocked.
-
 ## Overriding Built-in Profiles
 
 CLI flags always take precedence over profile settings:

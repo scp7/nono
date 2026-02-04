@@ -73,6 +73,33 @@ pub struct SecretsConfig {
     pub mappings: HashMap<String, String>,
 }
 
+/// Working directory access level for profiles
+///
+/// Controls whether and how the current working directory is automatically
+/// shared with the sandboxed process. This is profile-driven so each
+/// application can declare its own CWD requirements.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WorkdirAccess {
+    /// No automatic CWD access
+    #[default]
+    None,
+    /// Read-only access to CWD
+    Read,
+    /// Write-only access to CWD
+    Write,
+    /// Full read+write access to CWD
+    ReadWrite,
+}
+
+/// Working directory configuration in a profile
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct WorkdirConfig {
+    /// Access level for the current working directory
+    #[serde(default)]
+    pub access: WorkdirAccess,
+}
+
 /// A complete profile definition
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Profile {
@@ -84,6 +111,8 @@ pub struct Profile {
     pub network: NetworkConfig,
     #[serde(default)]
     pub secrets: SecretsConfig,
+    #[serde(default)]
+    pub workdir: WorkdirConfig,
 }
 
 impl Profile {
@@ -326,5 +355,58 @@ mod tests {
 
         let profile: Profile = toml::from_str(toml_str).unwrap();
         assert!(profile.secrets.mappings.is_empty());
+    }
+
+    #[test]
+    fn test_workdir_config_readwrite() {
+        let toml_str = r#"
+            [meta]
+            name = "test-profile"
+
+            [workdir]
+            access = "readwrite"
+        "#;
+
+        let profile: Profile = toml::from_str(toml_str).unwrap();
+        assert_eq!(profile.workdir.access, WorkdirAccess::ReadWrite);
+    }
+
+    #[test]
+    fn test_workdir_config_read() {
+        let toml_str = r#"
+            [meta]
+            name = "test-profile"
+
+            [workdir]
+            access = "read"
+        "#;
+
+        let profile: Profile = toml::from_str(toml_str).unwrap();
+        assert_eq!(profile.workdir.access, WorkdirAccess::Read);
+    }
+
+    #[test]
+    fn test_workdir_config_none() {
+        let toml_str = r#"
+            [meta]
+            name = "test-profile"
+
+            [workdir]
+            access = "none"
+        "#;
+
+        let profile: Profile = toml::from_str(toml_str).unwrap();
+        assert_eq!(profile.workdir.access, WorkdirAccess::None);
+    }
+
+    #[test]
+    fn test_workdir_config_default() {
+        let toml_str = r#"
+            [meta]
+            name = "test-profile"
+        "#;
+
+        let profile: Profile = toml::from_str(toml_str).unwrap();
+        assert_eq!(profile.workdir.access, WorkdirAccess::None);
     }
 }

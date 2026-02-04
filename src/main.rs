@@ -10,10 +10,11 @@ mod sandbox;
 mod sandbox_state;
 mod setup;
 
-use capability::{CapabilitySet, FsAccess};
+use capability::{CapabilitySet, FsAccess, FsCapability};
 use clap::Parser;
 use cli::{Cli, Commands, RunArgs, SetupArgs, WhyArgs, WhyOp};
 use error::{NonoError, Result};
+use profile::WorkdirAccess;
 use std::os::unix::process::CommandExt;
 use std::process::Command;
 use tracing::{error, info};
@@ -108,6 +109,7 @@ fn run_why(args: WhyArgs) -> Result<()> {
             block_command: vec![],
             secrets: None,
             profile: None,
+            allow_cwd: false,
             workdir: args.workdir.clone(),
             trust_unsigned: args.trust_unsigned,
             config: None,
@@ -131,6 +133,7 @@ fn run_why(args: WhyArgs) -> Result<()> {
             block_command: vec![],
             secrets: None,
             profile: None,
+            allow_cwd: false,
             workdir: args.workdir.clone(),
             trust_unsigned: false,
             config: None,
@@ -199,17 +202,70 @@ fn run_sandbox(args: RunArgs, silent: bool) -> Result<()> {
         None
     };
 
+    // Resolve the working directory (used for both profile expansion and CWD auto-inclusion)
+    let workdir = args
+        .workdir
+        .clone()
+        .or_else(|| std::env::current_dir().ok())
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+
+    // Extract workdir access config before profile is consumed for secrets
+    let profile_workdir_access = loaded_profile.as_ref().map(|p| p.workdir.access.clone());
+
     // Build capabilities from profile or arguments
-    let caps = if let Some(ref prof) = loaded_profile {
-        let workdir = args
-            .workdir
-            .clone()
-            .or_else(|| std::env::current_dir().ok())
-            .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let mut caps = if let Some(ref prof) = loaded_profile {
         CapabilitySet::from_profile(prof, &workdir, &args)?
     } else {
         CapabilitySet::from_args(&args)?
     };
+
+    // Auto-include CWD based on profile [workdir] config or default behavior
+    let cwd_access = if let Some(ref access) = profile_workdir_access {
+        // Profile loaded: use its [workdir] config
+        match access {
+            WorkdirAccess::Read => Some(FsAccess::Read),
+            WorkdirAccess::Write => Some(FsAccess::Write),
+            WorkdirAccess::ReadWrite => Some(FsAccess::ReadWrite),
+            WorkdirAccess::None => None,
+        }
+    } else {
+        // No profile: default to read-only CWD access
+        Some(FsAccess::Read)
+    };
+
+    if let Some(access) = cwd_access {
+        // Canonicalize CWD for path comparison
+        let cwd_canonical =
+            workdir
+                .canonicalize()
+                .map_err(|e| NonoError::PathCanonicalization {
+                    path: workdir.clone(),
+                    source: e,
+                })?;
+
+        // Only auto-add if CWD is not already covered by existing capabilities
+        if !caps.path_covered(&cwd_canonical) {
+            if args.allow_cwd {
+                // --allow-cwd: add without prompting
+                info!("Auto-including CWD with {} access (--allow-cwd)", access);
+                let cap = FsCapability::new_dir(workdir.clone(), access)?;
+                caps.add_fs(cap);
+            } else if silent {
+                // Silent mode: cannot prompt, require --allow-cwd
+                return Err(NonoError::CwdPromptRequired);
+            } else {
+                // Interactive: prompt user for confirmation
+                let confirmed = output::prompt_cwd_sharing(&cwd_canonical, &access)?;
+                if confirmed {
+                    let cap = FsCapability::new_dir(workdir.clone(), access)?;
+                    caps.add_fs(cap);
+                } else {
+                    info!("User declined CWD sharing. Continuing without automatic CWD access.");
+                }
+            }
+            caps.deduplicate();
+        }
+    }
 
     // Check if any capabilities are specified (must have fs or network)
     // Network is allowed by default, so only error if no fs AND network is blocked
