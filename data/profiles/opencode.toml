@@ -13,14 +13,16 @@ min_nono_version = "0.2.0"
 access = "readwrite"
 
 [filesystem]
-allow = []
-read = ["$HOME/.opencode"]
-write = []
-
-[filesystem.files]
-allow = []
+allow = [
+    "$HOME/.config/opencode",
+    "$HOME/.cache/opencode",
+    "$HOME/.local/share/opencode",
+]
 read = []
 write = []
+allow_file = []
+read_file = []
+write_file = []
 
 [network]
 block = false

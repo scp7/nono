@@ -127,7 +127,7 @@ nono run --allow . --net-block -- command
 nono run --allow . --dry-run -- command
 
 # Check why a path would be blocked
-nono why ~/.ssh/id_rsa
+nono why --path ~/.ssh/id_rsa --op read
 ```
 
 ## Command Blocking
@@ -161,16 +161,17 @@ nono run --allow . --block-command my-dangerous-tool -- my-script.sh
 
 ### Kernel-Level Protection
 
-Even if a command is allowed via `--allow-command`, nono applies kernel-level protection that blocks:
+nono applies kernel-level protections that limit destructive operations:
 
-- **File deletion** - `unlink`/`rmdir` syscalls are blocked
-- **File truncation** - Cannot zero out files via truncation
+- **File deletion blocked outside granted paths** - `unlink`/`rmdir` syscalls are blocked for system paths like `/tmp`, `/dev`, and any path not explicitly granted with `--allow` or `--write`
+- **Directory deletion blocked everywhere** - `rmdir` is blocked even within granted write paths (Linux: `RemoveDir` excluded from Landlock rules; macOS: global `deny file-write-unlink` with targeted overrides for file deletion only)
 
-This means even if `rm` is allowed, the actual deletion is blocked by the kernel:
+Within paths you explicitly grant write access to (`--allow` or `--write`), file creation, modification, and deletion are permitted - this is necessary for normal file operations like atomic writes.
 
 ```bash
-$ nono run --allow /tmp/test --allow-command rm -- rm /tmp/test/file.txt
-rm: /tmp/test/file.txt: Operation not permitted
+# File deletion blocked in system paths (even with --allow-command rm)
+$ nono run --allow ./project --allow-command rm -- rm /etc/hosts
+rm: /etc/hosts: Operation not permitted
 ```
 
 ## How It Works
@@ -228,7 +229,7 @@ nono follows a capability-based security model with defense-in-depth:
 
 1. **Command validation** - Dangerous commands (rm, dd, chmod, etc.) are blocked before execution
 2. **Sandbox applied** - OS-level restrictions are applied (irreversible)
-3. **Kernel enforcement** - Even allowed paths cannot have files deleted or truncated
+3. **Kernel enforcement** - Directory deletion blocked everywhere; file deletion blocked outside granted write paths
 4. **Command executed** - The command runs with only granted capabilities
 5. **All children inherit** - Subprocesses also run under restrictions
 
@@ -237,8 +238,8 @@ nono follows a capability-based security model with defense-in-depth:
 | Layer | Protection | Bypass |
 |-------|------------|--------|
 | Command blocklist | Blocks known-dangerous binaries | `--allow-command` |
-| Kernel (delete) | Blocks unlink/rmdir syscalls | None |
-| Kernel (truncate) | Blocks file truncation | None |
+| Kernel (dir delete) | Blocks directory deletion (rmdir) everywhere | None |
+| Kernel (file delete) | Blocks file deletion outside granted write paths | Explicit `--allow` / `--write` |
 | Filesystem sandbox | Restricts path access | Explicit `--allow` |
 | Network sandbox | Blocks network access | Remove `--net-block` |
 

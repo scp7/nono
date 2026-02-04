@@ -16,12 +16,10 @@ access = "readwrite"
 allow = ["$HOME/.claude"]
 read = []
 write = []
-
-[filesystem.files]
 # ~/.claude.json: agent writes settings/state here
-allow = ["$HOME/.claude.json"]
-read = []
-write = []
+allow_file = ["$HOME/.claude.json"]
+read_file = []
+write_file = []
 
 [network]
 block = false

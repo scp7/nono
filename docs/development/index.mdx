@@ -34,7 +34,7 @@ This section covers development topics for contributors and maintainers of nono.
 4. **Check formatting and lints**
    ```bash
    cargo fmt -- --check
-   cargo clippy -- -D warnings
+   cargo clippy -- -D warnings -D clippy::unwrap_used
    ```
 
 ## Development Environment
@@ -56,7 +56,7 @@ cargo build
 cargo build --release
 
 # Run with verbose logging
-RUST_LOG=debug cargo run -- --allow . -- echo "test"
+RUST_LOG=debug cargo run -- run --allow . -- echo "test"
 ```
 
 ## Code Standards

@@ -131,6 +131,33 @@ nono run --allow . --net-block -- cargo build
   Granular network filtering (e.g., allowing only specific domains like `api.anthropic.com`) is a desired feature but not yet supported. Apple Seatbelt has technical limitations that make per-host filtering challenging and would require significant experimentation to implement correctly. This feature may be added in a future release.
 </Note>
 
+### Command Blocking
+
+#### `--allow-command`
+
+Allow a normally-blocked dangerous command. By default, destructive commands like `rm`, `dd`, `chmod` are blocked. Use this flag to override for a specific command.
+
+```bash
+# Allow rm (blocked by default)
+nono run --allow . --allow-command rm -- rm ./temp-file.txt
+
+# Allow multiple commands
+nono run --allow . --allow-command rm --allow-command mv -- my-script.sh
+```
+
+<Note>
+  Even with `--allow-command`, the kernel sandbox still restricts file operations to granted paths. A command can only affect files within directories you explicitly allowed.
+</Note>
+
+#### `--block-command`
+
+Block an additional command beyond the default blocklist.
+
+```bash
+# Block a custom tool in addition to defaults
+nono run --allow . --block-command my-dangerous-tool -- my-script.sh
+```
+
 ### Secrets Options
 
 #### `--secrets`
@@ -170,6 +197,18 @@ Working directory for `$WORKDIR` expansion in profiles (defaults to current dire
 
 ```bash
 nono run --profile claude-code --workdir ./my-project -- claude
+```
+
+#### `--allow-cwd`
+
+Allow access to the current working directory without prompting. By default, nono prompts interactively for CWD sharing. The access level is determined by the profile's `[workdir]` config or defaults to read-only.
+
+```bash
+# Non-interactive mode (e.g., CI/CD)
+nono run --profile claude-code --allow-cwd -- claude
+
+# Silent mode requires --allow-cwd (cannot prompt)
+nono -s run --profile claude-code --allow-cwd -- claude
 ```
 
 #### `--trust-unsigned`

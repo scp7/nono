@@ -63,8 +63,6 @@ AccessFs::Execute
 
 ```rust
 AccessFs::WriteFile
-AccessFs::RemoveFile
-AccessFs::RemoveDir
 AccessFs::MakeChar
 AccessFs::MakeDir
 AccessFs::MakeReg
@@ -72,8 +70,12 @@ AccessFs::MakeSock
 AccessFs::MakeFifo
 AccessFs::MakeBlock
 AccessFs::MakeSym
-AccessFs::Truncate  // ABI v3+
+AccessFs::RemoveFile  // File deletion (needed for atomic writes)
+AccessFs::Refer       // Rename/hard link across directories (ABI v2+)
+AccessFs::Truncate    // ABI v3+
 ```
+
+Note: `RemoveDir` is intentionally excluded for safety - directory deletion is blocked even within writable paths.
 
 ### Full Access (`--allow`)
 

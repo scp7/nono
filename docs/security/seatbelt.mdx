@@ -30,8 +30,13 @@ A nono-generated Seatbelt profile follows this structure:
 (version 1)
 (deny default)
 
-; Process and system operations
-(allow process*)
+; Process operations (narrowed - no blanket process*)
+(allow process-exec*)                    ; Execute programs
+(allow process-fork)                     ; Fork child processes
+(allow process-info* (target self))      ; Self-inspection (dyld, code signing)
+(deny process-info* (target others))     ; Block inspecting other processes
+
+; System operations
 (allow sysctl-read)
 (allow mach*)
 (allow ipc*)

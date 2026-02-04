@@ -43,20 +43,39 @@ name = "my-agent"
 version = "1.0.0"
 description = "Profile for my custom agent"
 
+[workdir]
+# Controls automatic CWD sharing: "none", "read", "write", or "readwrite"
+access = "readwrite"
+
 [filesystem]
-allow = ["$WORKDIR"]
-read = ["$HOME/.config/my-agent"]
+# Directory permissions (recursive)
+allow = ["$HOME/.config/my-agent"]
+read = []
 write = []
 
-[filesystem.files]
-read = ["$HOME/.gitconfig"]
-write = []
+# Single file permissions (non-recursive)
+allow_file = []
+read_file = ["$HOME/.gitconfig"]
+write_file = []
 
 [network]
 block = false  # Network allowed by default; set to true to block
 
 # See "Secrets Section" below for configuring secrets
 ```
+
+### Working Directory Section
+
+The `[workdir]` section controls whether and how the current working directory is automatically shared with the sandboxed process. This is set per-profile so each application can declare its own CWD requirements.
+
+| Value | Meaning |
+|-------|---------|
+| `none` | No automatic CWD access (default if section omitted) |
+| `read` | Read-only access to CWD |
+| `write` | Write-only access to CWD |
+| `readwrite` | Full read+write access to CWD |
+
+When a profile specifies a `[workdir]` access level, nono will prompt the user to confirm CWD sharing (unless `--allow-cwd` is used to skip the prompt).
 
 ### Secrets Section
 
@@ -82,10 +101,12 @@ Profiles support these environment variables in path values:
 
 | Variable | Expands To |
 |----------|------------|
-| `$WORKDIR` | Current working directory |
+| `$WORKDIR` | Current working directory (from `--workdir` or cwd) |
 | `$HOME` | User's home directory |
 | `$XDG_CONFIG_HOME` | XDG config directory (default: `~/.config`) |
 | `$XDG_DATA_HOME` | XDG data directory (default: `~/.local/share`) |
+| `$TMPDIR` | System temporary directory |
+| `$UID` | Current user ID |
 
 ## Creating User Profiles
 
@@ -137,19 +158,22 @@ These profiles are compiled into nono and can be used without any configuration.
 [meta]
 name = "claude-code"
 version = "1.0.0"
-description = "Anthropic Claude Code CLI"
+description = "Anthropic Claude Code CLI agent"
+
+[workdir]
+access = "readwrite"
 
 [filesystem]
-allow = ["$WORKDIR", "$HOME/.claude"]
+allow = ["$HOME/.claude"]
 
-[filesystem.files]
-allow = ["$HOME/.claude.json"]
+[filesystem]
+allow_file = ["$HOME/.claude.json"]
 
 [network]
 block = false
 ```
 
-**Grants:** Read+write to working directory and `~/.claude`, write to `~/.claude.json`, full network access.
+**Grants:** Read+write to working directory (via `[workdir]`) and `~/.claude`, read+write to `~/.claude.json`, full network access.
 
 ---
 
@@ -161,9 +185,11 @@ name = "opencode"
 version = "1.0.0"
 description = "OpenCode AI coding assistant"
 
+[workdir]
+access = "readwrite"
+
 [filesystem]
 allow = [
-  "$WORKDIR",
   "$HOME/.config/opencode",
   "$HOME/.cache/opencode",
   "$HOME/.local/share/opencode"
@@ -173,7 +199,7 @@ allow = [
 block = false
 ```
 
-**Grants:** Read+write to working directory and OpenCode config/cache/data directories, full network access.
+**Grants:** Read+write to working directory (via `[workdir]`) and OpenCode config/cache/data directories, full network access.
 
 ---
 
@@ -185,10 +211,14 @@ name = "openclaw"
 version = "1.0.0"
 description = "OpenClaw messaging gateway"
 
+[workdir]
+access = "read"
+
 [filesystem]
 allow = [
   "$HOME/.openclaw",
   "$HOME/.config/openclaw",
+  "$HOME/.local",
   "$TMPDIR/openclaw-$UID"
 ]
 
@@ -196,7 +226,7 @@ allow = [
 block = false
 ```
 
-**Grants:** Read+write to OpenClaw config, state, and temp directories, full network access.
+**Grants:** Read-only access to working directory (via `[workdir]`), read+write to OpenClaw config, state, local data, and temp directories, full network access.
 
 ---
 
