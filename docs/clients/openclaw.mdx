@@ -54,9 +54,7 @@ docker run -v $(pwd):/work my-openclaw-image \
 
 See [nono vs Containers](/security/vs-containers) for a detailed comparison.
 
-## Built-in Profile
-
-nono includes a built-in `openclaw` profile that you can use immediately without any configuration:
+## Quick Start
 
 ```bash
 nono run --profile openclaw -- openclaw gateway
@@ -69,19 +67,11 @@ The built-in profile provides:
 
 ## Custom Profile
 
-If you need different permissions, you can create a custom profile. Custom profiles are stored in:
-
-```
-~/.config/nono/profiles/<name>.toml
-```
-
-For example, to create a stricter openclaw profile with read-only config access:
+If you need different permissions, create a custom profile at `~/.config/nono/profiles/openclaw-strict.toml`:
 
 ```bash
 mkdir -p ~/.config/nono/profiles
 ```
-
-Then create `~/.config/nono/profiles/openclaw-strict.toml`:
 
 ```toml
 [meta]
@@ -104,13 +94,14 @@ openai_api_key = "OPENAI_API_KEY"
 
 **Usage (custom profiles require `--trust-unsigned`):**
 ```bash
-# Profile includes secrets, so just pass --secrets to enable loading
 nono run --profile openclaw-strict --trust-unsigned --secrets -- openclaw gateway
 ```
 
 <Note>
 Custom profiles override built-in profiles of the same name. If you create `~/.config/nono/profiles/openclaw.toml`, it will be used instead of the built-in.
 </Note>
+
+See [Security Profiles](/security/profiles) for the full profile format reference.
 
 ## Security Tips
 
@@ -153,7 +144,6 @@ secret-tool store --label="nono: openai_api_key" service nono username openai_ap
 **Step 2: Run OpenClaw with secrets loaded**
 
 ```bash
-# Run the gateway with secrets injected as environment variables
 nono run --profile openclaw --secrets telegram_bot_token,openai_api_key -- openclaw gateway
 ```
 

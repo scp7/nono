@@ -1,0 +1,246 @@
+---
+title: Security Profiles
+description: Profile format, built-in policies, and creating custom profiles
+---
+
+Profiles are pre-configured capability sets that define what a sandboxed process can access. They codify security policy so you don't have to specify flags manually every time.
+
+## Why Profiles?
+
+Manually specifying capabilities for every tool is tedious and error-prone:
+
+```bash
+# Without profiles - verbose and easy to misconfigure
+nono run --allow . --read ~/.claude --read-file ~/.claude/config.json -- claude
+```
+
+Profiles simplify this:
+
+```bash
+# With profiles - concise and auditable
+nono run --profile claude-code -- claude
+```
+
+## Profile Sources
+
+Profiles can come from three sources, in order of precedence:
+
+| Source | Location | Trust Level |
+|--------|----------|-------------|
+| CLI flags | Command line | Highest - explicit user intent |
+| User profiles | `~/.config/nono/profiles/` | Medium - user-defined |
+| Built-in profiles | Compiled into binary | Base - audited defaults |
+
+CLI flags always override profile settings.
+
+## Profile Format
+
+Profiles use TOML format:
+
+```toml
+[meta]
+name = "my-agent"
+version = "1.0.0"
+description = "Profile for my custom agent"
+
+[filesystem]
+allow = ["$WORKDIR"]
+read = ["$HOME/.config/my-agent"]
+write = []
+
+[filesystem.files]
+read = ["$HOME/.gitconfig"]
+write = []
+
+[network]
+block = false  # Network allowed by default; set to true to block
+
+# See "Secrets Section" below for configuring secrets
+```
+
+### Secrets Section
+
+The `[secrets]` section maps keystore account names to environment variable names. Secrets are loaded from the system keystore (macOS Keychain / Linux Secret Service) before the sandbox is applied, then injected as environment variables.
+
+```toml
+[secrets]
+openai_api_key = "OPENAI_API_KEY"
+database_url = "DATABASE_URL"
+```
+
+To use secrets from a profile, add the `--secrets` flag:
+
+```bash
+nono run --profile my-agent --secrets -- my-command
+```
+
+See [Secrets Management](/usage/secrets) for details on storing secrets in the keystore.
+
+## Environment Variables
+
+Profiles support these environment variables in path values:
+
+| Variable | Expands To |
+|----------|------------|
+| `$WORKDIR` | Current working directory |
+| `$HOME` | User's home directory |
+| `$XDG_CONFIG_HOME` | XDG config directory (default: `~/.config`) |
+| `$XDG_DATA_HOME` | XDG data directory (default: `~/.local/share`) |
+
+## Creating User Profiles
+
+1. Create the profiles directory:
+   ```bash
+   mkdir -p ~/.config/nono/profiles
+   ```
+
+2. Create a TOML file:
+   ```bash
+   cat > ~/.config/nono/profiles/my-agent.toml << 'EOF'
+   [meta]
+   name = "my-agent"
+   version = "1.0.0"
+
+   [filesystem]
+   allow = ["$WORKDIR"]
+
+   [network]
+   block = true  # Block all network access
+   EOF
+   ```
+
+3. Use the profile:
+   ```bash
+   nono run --profile my-agent --trust-unsigned -- my-agent-command
+   ```
+
+## Profile Verification
+
+Built-in profiles are compiled into the nono binary. User profiles can optionally be signed using minisign for integrity verification.
+
+```bash
+# Sign a profile
+minisign -Sm my-profile.toml
+
+# nono verifies signatures automatically when present
+```
+
+See [Profile Signing](/security/signing) for full details.
+
+## Built-in Profile Policies
+
+These profiles are compiled into nono and can be used without any configuration. Each section documents the exact permissions granted.
+
+### claude-code
+
+```toml
+[meta]
+name = "claude-code"
+version = "1.0.0"
+description = "Anthropic Claude Code CLI"
+
+[filesystem]
+allow = ["$WORKDIR", "$HOME/.claude"]
+
+[filesystem.files]
+allow = ["$HOME/.claude.json"]
+
+[network]
+block = false
+```
+
+**Grants:** Read+write to working directory and `~/.claude`, write to `~/.claude.json`, full network access.
+
+---
+
+### opencode
+
+```toml
+[meta]
+name = "opencode"
+version = "1.0.0"
+description = "OpenCode AI coding assistant"
+
+[filesystem]
+allow = [
+  "$WORKDIR",
+  "$HOME/.config/opencode",
+  "$HOME/.cache/opencode",
+  "$HOME/.local/share/opencode"
+]
+
+[network]
+block = false
+```
+
+**Grants:** Read+write to working directory and OpenCode config/cache/data directories, full network access.
+
+---
+
+### openclaw
+
+```toml
+[meta]
+name = "openclaw"
+version = "1.0.0"
+description = "OpenClaw messaging gateway"
+
+[filesystem]
+allow = [
+  "$HOME/.openclaw",
+  "$HOME/.config/openclaw",
+  "$TMPDIR/openclaw-$UID"
+]
+
+[network]
+block = false
+```
+
+**Grants:** Read+write to OpenClaw config, state, and temp directories, full network access.
+
+---
+
+### cargo-build
+
+```toml
+[meta]
+name = "cargo-build"
+version = "1.0.0"
+description = "Rust cargo build (no network)"
+
+[filesystem]
+allow = ["$WORKDIR"]
+read = ["$HOME/.cargo", "$HOME/.rustup"]
+
+[network]
+block = true
+```
+
+**Grants:** Read+write to working directory, read-only access to Rust toolchain, network blocked.
+
+## Overriding Built-in Profiles
+
+CLI flags always take precedence over profile settings:
+
+```bash
+# Use claude-code profile but block network
+nono run --profile claude-code --net-block -- claude
+
+# Add extra directory access
+nono run --profile claude-code --allow ~/other-project -- claude
+```
+
+You can also create a user profile with the same name to override a built-in profile entirely.
+
+## Requesting New Built-in Profiles
+
+If you'd like a built-in profile for a tool not listed here:
+
+1. Open an issue on the [nono GitHub repository](https://github.com/lukehinds/nono/issues)
+2. Include:
+   - Tool name and repository URL
+   - Required filesystem access patterns
+   - Network requirements
+   - Any special considerations
+
+Built-in profiles are reviewed for security before inclusion.

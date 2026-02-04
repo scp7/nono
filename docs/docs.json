@@ -38,7 +38,8 @@
             "group": "Getting Started",
             "pages": [
               "home",
-              "installation"
+              "installation",
+              "troubleshooting"
             ]
           },
           {
@@ -50,23 +51,25 @@
             ]
           },
           {
+            "group": "Client Guides",
+            "pages": [
+              "clients/index",
+              "clients/claude-code",
+              "clients/opencode",
+              "clients/openclaw",
+              "clients/cargo-build"
+            ]
+          },
+          {
             "group": "Security",
             "pages": [
               "security/index",
+              "security/profiles",
               "security/signing",
               "security/vs-containers",
               "security/landlock",
               "security/seatbelt",
               "security/vs-application"
-            ]
-          },
-          {
-            "group": "Profiles",
-            "pages": [
-              "profiles/index",
-              "profiles/built-in",
-              "profiles/openclaw",
-              "troubleshooting"
             ]
           },
           {

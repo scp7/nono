@@ -47,35 +47,46 @@ cd nono
 cargo build --release
 ```
 
-## Get Started!
+## Supported Clients
 
+nono ships with built-in profiles for popular AI coding agents. Each profile defines audited, minimal permissions so you can get started with a single command.
 
-### Claude Code
+<table>
+  <tr>
+    <th>Client</th>
+    <th>Command</th>
+    <th>Network</th>
+    <th>Docs</th>
+  </tr>
+  <tr>
+    <td><strong>Claude Code</strong><br/>Anthropic's CLI coding agent</td>
+    <td><code>nono run --profile claude-code -- claude</code></td>
+    <td>Allowed</td>
+    <td><a href="https://nono.sh/clients/claude-code">Guide</a></td>
+  </tr>
+  <tr>
+    <td><strong>OpenCode</strong><br/>Open-source AI coding assistant</td>
+    <td><code>nono run --profile opencode -- opencode</code></td>
+    <td>Allowed</td>
+    <td><a href="https://nono.sh/clients/opencode">Guide</a></td>
+  </tr>
+  <tr>
+    <td><strong>OpenClaw</strong><br/>Multi-channel AI agent platform</td>
+    <td><code>nono run --profile openclaw -- openclaw gateway</code></td>
+    <td>Allowed</td>
+    <td><a href="https://nono.sh/clients/openclaw">Guide</a></td>
+  </tr>
+</table>
 
-Run Claude Code in a sandboxed environment:
+Don't see your tool? nono is agent-agnostic and works with any CLI command:
 
 ```bash
-nono run --profile claude-code --allow . claude
+nono run --allow . -- my-agent
 ```
 
-This command:
-- Grants read+write access to your current directory
+### Shell Alias (Claude Code example)
 
-#### Creating an Alias
-
-Choose ONE of the following options:
-
-**Option 1: Simple (limited) alias** (if you only need current directory access)
-
-```bash
-alias sclaude='nono run --profile claude-code --allow . claude'
-```
-
-Usage: `sclaude`
-
-> Note: This alias does NOT support additional flags like `--allow /tmp`. If you need to grant access to additional paths, use Option 2 instead.
-
-**Option 2: Flexible function** (if you need to grant additional paths)
+For quick access, add a shell function:
 
 ```bash
 sclaude() {
@@ -88,24 +99,6 @@ Usage:
 sclaude                           # Current directory only
 sclaude --allow /tmp              # Current directory + /tmp
 sclaude --read ~/Documents        # Current directory + read-only ~/Documents
-```
-
-#### Verifying Your Setup
-
-After adding the alias/function, reload your shell configuration:
-
-```bash
-source ~/.zshrc  # or ~/.bashrc
-```
-
-Test that it works:
-
-```bash
-# Check that nono grants the expected permissions
-sclaude --dry-run
-
-# Verify Claude version (ensure consistent version)
-which claude
 ```
 
 ## Features
@@ -225,6 +218,8 @@ rm: /tmp/test/file.txt: Operation not permitted
 | **Learning Mode** | `nono learn -- command` traces syscalls and generates a minimal capability profile |
 | **Ephemeral Mode** | `nono run --ephemeral` creates a copy-on-write overlay filesystem where writes are isolated, enabling full undo |
 | **Audit Logging** | `nono run --audit-log ./session.jsonl -- command` logs all sandbox-relevant operations for post-hoc analysis and replay |
+| **Extend Secrets Manager Support** | Support for popular secrets managers: Bitwarden/1Password/KeePass  |
+| **nono as a library** | Expose nono's sandboxing functionality as a library via Rust bindings |
 | **Windows Support** | Implement a Windows version using Job Objects and Windows Sandbox |
 
 
