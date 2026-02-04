@@ -44,7 +44,7 @@ We are in the process of packaging nono for popular Linux distributions. In the 
 
 ### Building from Source
 
-See the [Development Guide](development/index.md) for instructions on building nono from source.
+See the [Development Guide](https://docs.nono.sh/development) for instructions on building nono from source.
 
 ## Supported Clients
 
