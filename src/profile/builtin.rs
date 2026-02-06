@@ -39,7 +39,14 @@ fn claude_code() -> Profile {
         },
         filesystem: FilesystemConfig {
             // ~/.claude: agent state, debug logs, projects, etc.
-            allow: vec!["$HOME/.claude".to_string()],
+            // ~/Library/Keychains: Claude Code stores OAuth tokens in macOS keychain
+            //   - "Claude Safe Storage": encryption key for local credential storage
+            //   - "Claude Code-credentials": OAuth access/refresh tokens
+            // Without keychain access, OAuth token refresh fails and requires frequent re-login
+            allow: vec![
+                "$HOME/.claude".to_string(),
+                "$HOME/Library/Keychains".to_string(),
+            ],
             read: vec![],
             write: vec![],
             // ~/.claude.json: agent writes settings/state here

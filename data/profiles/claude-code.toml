@@ -13,7 +13,11 @@ access = "readwrite"
 
 [filesystem]
 # ~/.claude: agent state, debug logs, projects, etc.
-allow = ["$HOME/.claude"]
+# ~/Library/Keychains: Claude Code stores OAuth tokens in macOS keychain
+#   - "Claude Safe Storage": encryption key for local credential storage
+#   - "Claude Code-credentials": OAuth access/refresh tokens
+# Without keychain access, OAuth token refresh fails and requires frequent re-login
+allow = ["$HOME/.claude", "$HOME/Library/Keychains"]
 read = []
 write = []
 # ~/.claude.json: agent writes settings/state here
