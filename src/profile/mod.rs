@@ -23,7 +23,7 @@ pub struct ProfileMeta {
     pub description: Option<String>,
     #[serde(default)]
     pub author: Option<String>,
-    /// Minisign signature (Phase 2)
+    ///  signature support
     #[serde(default)]
     pub signature: Option<String>,
 }
@@ -158,7 +158,7 @@ impl Profile {
 /// 1. User profiles from ~/.config/nono/profiles/<name>.toml (allows customization)
 /// 2. Built-in profiles (compiled into binary, fallback)
 ///
-/// User profiles require --trust-unsigned unless signed (Phase 2).
+/// User profiles require --trust-unsigned unntil signed (planned feature)
 pub fn load_profile(name: &str, trust_unsigned: bool) -> Result<Profile> {
     // Validate profile name (alphanumeric + hyphen only)
     if !is_valid_profile_name(name) {

@@ -2,6 +2,13 @@
 //!
 //! This module defines how nono executes commands within the sandbox.
 //! The strategy determines the process model and what features are available.
+//!
+//! # Async-Signal-Safety
+//!
+//! The Monitor strategy uses `fork()` to create a child process. After fork in a
+//! multi-threaded program, the child can only safely call async-signal-safe functions
+//! until `exec()`. This module carefully prepares all data in the parent (where
+//! allocation is safe) and uses only raw libc calls in the child.
 
 use crate::capability::CapabilitySet;
 use crate::diagnostic::DiagnosticFormatter;
@@ -10,13 +17,39 @@ use nix::libc;
 use nix::sys::signal::{self, Signal};
 use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
 use nix::unistd::{fork, ForkResult, Pid};
+use std::ffi::CString;
 use std::io::{BufRead, BufReader, Write};
+use std::mem::ManuallyDrop;
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::process::CommandExt;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
+
+/// Maximum threads allowed when keyring backend is active.
+/// Main thread (1) + up to 3 keyring threads for D-Bus/Security.framework.
+const MAX_KEYRING_THREADS: usize = 4;
+
+/// Threading context for fork safety validation.
+///
+/// After loading secrets from the system keystore, the keyring crate may leave
+/// background threads running (for D-Bus/Security.framework communication).
+/// These threads are benign for our fork+exec pattern because:
+/// - They don't hold locks that the main thread or child process needs
+/// - The child immediately calls exec(), clearing all thread state
+/// - The parent's keyring threads continue independently
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ThreadingContext {
+    /// Enforce single-threaded execution (default).
+    /// Fork will fail if thread count > 1.
+    #[default]
+    Strict,
+
+    /// Allow elevated thread count for known-safe keyring backends.
+    /// Fork proceeds if thread count <= MAX_KEYRING_THREADS.
+    KeyringExpected,
+}
 
 /// Execution strategy for running sandboxed commands.
 ///
@@ -66,6 +99,8 @@ pub struct ExecConfig<'a> {
     pub cap_file: &'a std::path::Path,
     /// Whether to suppress diagnostic output.
     pub no_diagnostics: bool,
+    /// Threading context for fork safety validation.
+    pub threading: ThreadingContext,
 }
 
 /// Execute a command using the Direct strategy (exec, nono disappears).
@@ -125,51 +160,107 @@ pub fn execute_direct(config: &ExecConfig<'_>) -> Result<()> {
 /// # Process Flow
 ///
 /// 1. Sandbox is already applied (caller's responsibility)
-/// 2. Apply platform-specific ptrace hardening
-/// 3. Verify single-threaded execution
-/// 4. Create pipe for stderr interception
-/// 5. Fork into parent and child
-/// 6. Child: redirect stderr to pipe, exec into target command
-/// 7. Parent: read stderr, inject diagnostic on permission errors, wait for exit
+/// 2. Prepare all data for exec in parent (path resolution, CString conversion)
+/// 3. Apply platform-specific ptrace hardening
+/// 4. Verify threading context allows fork
+/// 5. Create pipes for output interception
+/// 6. Fork into parent and child
+/// 7. Child: close FDs, redirect output to pipes, exec using prepared data
+/// 8. Parent: read pipes, inject diagnostic on permission errors, wait for exit
+///
+/// # Async-Signal-Safety
+///
+/// After fork() in a potentially multi-threaded process, the child can only safely
+/// call async-signal-safe functions until exec(). This implementation:
+/// - Resolves the program path in the parent using `which`
+/// - Converts all strings to CString in the parent
+/// - Uses only raw libc calls in the child (no Rust allocations)
+/// - Exits with `libc::_exit()` on error (not `std::process::exit()` or panic)
 pub fn execute_monitor(config: &ExecConfig<'_>) -> Result<i32> {
     let program = &config.command[0];
     let cmd_args = &config.command[1..];
 
     info!("Executing (monitor): {} {:?}", program, cmd_args);
 
-    // SECURITY: Platform-specific ptrace hardening BEFORE fork
-    // This is defense-in-depth; in Monitor mode both processes are sandboxed anyway.
-    //
-    // Linux: PR_SET_DUMPABLE(0) prevents:
-    //   - Core dumps that might contain sensitive data
-    //   - ptrace attachment from other processes (same UID)
-    //
-    // macOS: PT_DENY_ATTACH prevents:
-    //   - Debugger attachment via ptrace()
-    //   - Note: Seatbelt sandbox also blocks process-info for other processes
+    // Resolve program to absolute path (cannot search PATH after fork)
+    let program_path = which::which(program).map_err(|e| {
+        NonoError::CommandExecution(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("{}: {}", program, e),
+        ))
+    })?;
+
+    // Convert program path to CString for execve
+    let program_c = CString::new(program_path.to_string_lossy().as_bytes())
+        .map_err(|_| NonoError::SandboxInit("Program path contains null byte".to_string()))?;
+
+    // Build argv: [program, args..., NULL]
+    let mut argv_c: Vec<CString> = Vec::with_capacity(1 + cmd_args.len());
+    argv_c.push(program_c.clone());
+    for arg in cmd_args {
+        argv_c.push(CString::new(arg.as_bytes()).map_err(|_| {
+            NonoError::SandboxInit(format!("Argument contains null byte: {}", arg))
+        })?);
+    }
+
+    // Build environment: inherit current env + add our vars
+    let mut env_c: Vec<CString> = Vec::new();
+
+    // Copy current environment, skipping vars we'll override
+    for (key, value) in std::env::vars_os() {
+        if let (Some(k), Some(v)) = (key.to_str(), value.to_str()) {
+            let should_skip =
+                config.env_vars.iter().any(|(ek, _)| *ek == k) || k == "NONO_CAP_FILE";
+            if !should_skip {
+                if let Ok(cstr) = CString::new(format!("{}={}", k, v)) {
+                    env_c.push(cstr);
+                }
+            }
+        }
+    }
+
+    // Add NONO_CAP_FILE
+    if let Some(cap_file_str) = config.cap_file.to_str() {
+        if let Ok(cstr) = CString::new(format!("NONO_CAP_FILE={}", cap_file_str)) {
+            env_c.push(cstr);
+        }
+    }
+
+    // Add user-specified environment variables (secrets, etc.)
+    for (key, value) in &config.env_vars {
+        if let Ok(cstr) = CString::new(format!("{}={}", key, value)) {
+            env_c.push(cstr);
+        }
+    }
+
+    // Create null-terminated pointer arrays for execve
+    let argv_ptrs: Vec<*const libc::c_char> = argv_c
+        .iter()
+        .map(|s| s.as_ptr())
+        .chain(std::iter::once(std::ptr::null()))
+        .collect();
+
+    let envp_ptrs: Vec<*const libc::c_char> = env_c
+        .iter()
+        .map(|s| s.as_ptr())
+        .chain(std::iter::once(std::ptr::null()))
+        .collect();
+
+    // Platform-specific ptrace hardening
     #[cfg(target_os = "linux")]
     {
         use nix::sys::prctl;
         if let Err(e) = prctl::set_dumpable(false) {
-            // Log but don't fail - sandbox is still active
             warn!("Failed to set PR_SET_DUMPABLE(0): {}", e);
         }
     }
 
     #[cfg(target_os = "macos")]
     {
-        // PT_DENY_ATTACH (31) prevents debuggers from attaching to this process.
-        // This is defense-in-depth on macOS; the Seatbelt sandbox already blocks
-        // process-info* for other processes, limiting ptrace utility.
-        //
-        // SAFETY: ptrace with PT_DENY_ATTACH is safe - it only affects the calling
-        // process and cannot fail dangerously (worst case: returns -1).
         const PT_DENY_ATTACH: libc::c_int = 31;
-        // macOS ptrace signature: (request, pid, addr, data) where addr is *mut c_char
         let result =
             unsafe { libc::ptrace(PT_DENY_ATTACH, 0, std::ptr::null_mut::<libc::c_char>(), 0) };
         if result != 0 {
-            // Log but don't fail - sandbox is still active
             warn!(
                 "Failed to set PT_DENY_ATTACH: {} (errno: {})",
                 result,
@@ -178,128 +269,153 @@ pub fn execute_monitor(config: &ExecConfig<'_>) -> Result<i32> {
         }
     }
 
-    // SECURITY INVARIANT: Verify we're single-threaded before fork.
-    // Fork in a multi-threaded program is unsafe (deadlocks, corrupted state).
-    // This runtime check catches violations that static analysis might miss.
+    // Validate threading context before fork
     let thread_count = get_thread_count();
-    if thread_count > 1 {
-        return Err(NonoError::SandboxInit(format!(
-            "Cannot fork: process has {} threads (expected 1). \
-             This is a bug - fork() requires single-threaded execution.",
-            thread_count
-        )));
+    match (config.threading, thread_count) {
+        (_, 1) => {}
+        (ThreadingContext::KeyringExpected, n) if n <= MAX_KEYRING_THREADS => {
+            debug!(
+                "Proceeding with fork despite {} threads (keyring backend threads expected)",
+                n
+            );
+        }
+        (ThreadingContext::Strict, n) => {
+            return Err(NonoError::SandboxInit(format!(
+                "Cannot fork: process has {} threads (expected 1). \
+                 This is a bug - fork() requires single-threaded execution.",
+                n
+            )));
+        }
+        (ThreadingContext::KeyringExpected, n) => {
+            return Err(NonoError::SandboxInit(format!(
+                "Cannot fork: process has {} threads (max {} with keyring). \
+                 Unexpected threading detected.",
+                n, MAX_KEYRING_THREADS
+            )));
+        }
     }
 
     // Create pipes for stdout and stderr interception
-    // Parent reads from pipe_read, child writes to pipe_write
     let (stdout_read, stdout_write): (OwnedFd, OwnedFd) = nix::unistd::pipe()
         .map_err(|e| NonoError::SandboxInit(format!("pipe() for stdout failed: {}", e)))?;
     let (stderr_read, stderr_write): (OwnedFd, OwnedFd) = nix::unistd::pipe()
         .map_err(|e| NonoError::SandboxInit(format!("pipe() for stderr failed: {}", e)))?;
 
-    // Get raw fds before fork (OwnedFd doesn't implement Copy)
+    // Extract raw FDs before fork
     let stdout_write_fd = stdout_write.as_raw_fd();
     let stderr_write_fd = stderr_write.as_raw_fd();
+    let stdout_read_fd = stdout_read.as_raw_fd();
+    let stderr_read_fd = stderr_read.as_raw_fd();
 
-    // SAFETY: fork() is safe here because:
-    // - We verified single-threaded execution above
-    // - No locks are held (main() doesn't acquire any before calling us)
-    // - Child will immediately exec()
+    // Wrap in ManuallyDrop to prevent Drop from running in child
+    // (Drop may allocate, which is unsafe after fork)
+    let stdout_read = ManuallyDrop::new(stdout_read);
+    let stdout_write = ManuallyDrop::new(stdout_write);
+    let stderr_read = ManuallyDrop::new(stderr_read);
+    let stderr_write = ManuallyDrop::new(stderr_write);
+
+    // Compute max FD in parent (get_max_fd may allocate on Linux)
+    let max_fd = get_max_fd();
+
+    // SAFETY: fork() is safe here because we validated threading context
+    // and child will only use async-signal-safe functions until exec()
     let fork_result = unsafe { fork() };
 
     match fork_result {
         Ok(ForkResult::Child) => {
-            // Child process: close read ends, redirect stdout/stderr, exec
-            drop(stdout_read);
-            drop(stderr_read);
+            // CHILD: No allocations allowed from here until exec()
 
-            // Redirect stdout (fd 1) to stdout pipe
-            let stdout_fd = std::io::stdout().as_raw_fd();
-            if stdout_write_fd != stdout_fd {
-                // SAFETY: dup2 with valid fds we own
-                unsafe {
-                    if libc::dup2(stdout_write_fd, stdout_fd) == -1 {
-                        // If dup2 fails, continue with original stdout
-                    }
+            // Close read ends of pipes
+            unsafe {
+                libc::close(stdout_read_fd);
+                libc::close(stderr_read_fd);
+            }
+
+            // Close inherited FDs from keyring/other sources
+            close_inherited_fds(max_fd, &[stdout_write_fd, stderr_write_fd]);
+
+            // Redirect stdout to pipe
+            unsafe {
+                if stdout_write_fd != libc::STDOUT_FILENO {
+                    libc::dup2(stdout_write_fd, libc::STDOUT_FILENO);
+                    libc::close(stdout_write_fd);
                 }
             }
 
-            // Redirect stderr (fd 2) to stderr pipe
-            let stderr_fd = std::io::stderr().as_raw_fd();
-            if stderr_write_fd != stderr_fd {
-                // SAFETY: dup2 with valid fds we own
-                unsafe {
-                    if libc::dup2(stderr_write_fd, stderr_fd) == -1 {
-                        // If dup2 fails, continue with original stderr
-                    }
+            // Redirect stderr to pipe
+            unsafe {
+                if stderr_write_fd != libc::STDERR_FILENO {
+                    libc::dup2(stderr_write_fd, libc::STDERR_FILENO);
+                    libc::close(stderr_write_fd);
                 }
             }
 
-            // Close original pipe write ends (stdout/stderr now point to them)
-            drop(stdout_write);
-            drop(stderr_write);
+            // Execute using pre-prepared CStrings (no allocation)
+            unsafe {
+                libc::execve(program_c.as_ptr(), argv_ptrs.as_ptr(), envp_ptrs.as_ptr());
+            }
 
-            execute_child(config)
+            // execve only returns on error - exit without cleanup
+            unsafe { libc::_exit(127) }
         }
         Ok(ForkResult::Parent { child }) => {
-            // Parent process: close write ends, read from pipes, wait for child
-            drop(stdout_write);
-            drop(stderr_write);
+            // PARENT: Close write ends, read from pipes, wait for child
+            unsafe {
+                ManuallyDrop::drop(&mut { stdout_write });
+                ManuallyDrop::drop(&mut { stderr_write });
+            }
 
-            // Convert OwnedFd to File for safe reading
+            let stdout_read = ManuallyDrop::into_inner(stdout_read);
+            let stderr_read = ManuallyDrop::into_inner(stderr_read);
+
             let stdout_file = std::fs::File::from(stdout_read);
             let stderr_file = std::fs::File::from(stderr_read);
 
             execute_parent_monitor(child, config, stdout_file, stderr_file)
         }
         Err(e) => {
-            // OwnedFd drop will close on error path
-            drop(stdout_read);
-            drop(stdout_write);
-            drop(stderr_read);
-            drop(stderr_write);
+            unsafe {
+                ManuallyDrop::drop(&mut { stdout_read });
+                ManuallyDrop::drop(&mut { stdout_write });
+                ManuallyDrop::drop(&mut { stderr_read });
+                ManuallyDrop::drop(&mut { stderr_write });
+            }
             Err(NonoError::SandboxInit(format!("fork() failed: {}", e)))
         }
     }
 }
 
-/// Child process execution (called after fork).
+/// Close inherited file descriptors, keeping stdin/stdout/stderr and specified FDs.
 ///
-/// # Returns
-///
-/// This function never returns (`-> !`) - it either:
-/// - Calls `exec()` which replaces the process image, or
-/// - Calls `std::process::exit()` on exec failure
-fn execute_child(config: &ExecConfig<'_>) -> ! {
-    let program = &config.command[0];
-    let cmd_args = &config.command[1..];
+/// `max_fd` must be computed in the parent before fork (get_max_fd may allocate).
+fn close_inherited_fds(max_fd: i32, keep_fds: &[i32]) {
+    for fd in 3..=max_fd {
+        if !keep_fds.contains(&fd) {
+            unsafe { libc::close(fd) };
+        }
+    }
+}
 
-    debug!("Child process starting: {} {:?}", program, cmd_args);
-
-    let mut cmd = Command::new(program);
-    cmd.args(cmd_args).env("NONO_CAP_FILE", config.cap_file);
-
-    for (key, value) in &config.env_vars {
-        cmd.env(key, value);
+/// Get the maximum file descriptor number to iterate over.
+fn get_max_fd() -> i32 {
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(entries) = std::fs::read_dir("/proc/self/fd") {
+            let max = entries
+                .filter_map(|e| e.ok())
+                .filter_map(|e| e.file_name().to_str().and_then(|s| s.parse::<i32>().ok()))
+                .max()
+                .unwrap_or(1024);
+            return max;
+        }
     }
 
-    let err = cmd.exec();
-
-    // exec() only returns if there's an error
-    // Print error to stderr so parent can see it
-    error!("exec() failed: {}", err);
-    eprintln!("{}: {}", program, err);
-
-    // Exit with a distinctive code for exec failure
-    // 126 = command found but not executable
-    // 127 = command not found
-    let exit_code = if err.kind() == std::io::ErrorKind::NotFound {
-        127
+    let max = unsafe { libc::sysconf(libc::_SC_OPEN_MAX) };
+    if max > 0 {
+        std::cmp::min(max as i32, 65536)
     } else {
-        126
-    };
-
-    std::process::exit(exit_code)
+        1024
+    }
 }
 
 /// Patterns that indicate a permission error from sandbox restrictions.
@@ -392,9 +508,9 @@ fn execute_parent_monitor(
 
 /// Process output from the child (stdout or stderr), forwarding and injecting diagnostics.
 ///
-/// When a permission error is detected on either stream, the diagnostic is written to BOTH
-/// stdout and stderr. This ensures AI agents like Claude Code see the diagnostic regardless
-/// of how they capture/render subprocess output.
+/// When a permission error is detected on either stream, the diagnostic is written to stdout.
+/// This ensures AI agents like Claude Code see the diagnostic since they typically capture
+/// and re-render subprocess output through their TUI.
 fn process_output(
     pipe: std::fs::File,
     caps: &CapabilitySet,

@@ -321,7 +321,18 @@ fn execute_sandboxed(
         exec_strategy::ExecStrategy::Monitor
     };
 
-    info!("Executing with strategy: {:?}", strategy);
+    // Determine threading context for fork safety
+    // If secrets were loaded, keyring may have spawned threads
+    let threading = if !loaded_secrets.is_empty() {
+        exec_strategy::ThreadingContext::KeyringExpected
+    } else {
+        exec_strategy::ThreadingContext::Strict
+    };
+
+    info!(
+        "Executing with strategy: {:?}, threading: {:?}",
+        strategy, threading
+    );
 
     // Create execution config
     let config = exec_strategy::ExecConfig {
@@ -330,6 +341,7 @@ fn execute_sandboxed(
         env_vars,
         cap_file: &cap_file_path,
         no_diagnostics: silent,
+        threading,
     };
 
     // Execute based on strategy

@@ -271,7 +271,7 @@ The sandbox is a hard security boundary. Once applied, it cannot be expanded. Th
 /// upfront context to Claude about the sandbox restrictions.
 fn update_claude_md(claude_md_path: &PathBuf) -> Result<()> {
     let nono_section = format!(
-        "{}\n{}\n{}",
+        "{}\n{}{}",
         NONO_SECTION_START, NONO_CLAUDE_MD_CONTENT, NONO_SECTION_END
     );
 
@@ -296,7 +296,7 @@ fn update_claude_md(claude_md_path: &PathBuf) -> Result<()> {
                     let end_of_section = end + NONO_SECTION_END.len();
                     let before = &existing[..start];
                     let after = &existing[end_of_section..];
-                    format!("{}{}{}", before.trim_end(), nono_section, after)
+                    format!("{}\n\n{}{}", before.trim_end(), nono_section, after)
                 } else {
                     // Markers in wrong order - malformed, append fresh
                     tracing::warn!("Malformed nono section markers in CLAUDE.md (end before start), appending fresh");

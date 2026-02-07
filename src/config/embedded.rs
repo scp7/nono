@@ -17,6 +17,7 @@ const EMBEDDED_SECURITY_LISTS: &str =
 
 /// Author public key for verifying signatures
 /// This is the root of trust - embedded at compile time
+/// Luke: Implementing signature verification is a future step, but we need to have the key in place for when we do. In fact it will be rotating, so we need to have the infrastructure for it in place before we can generate the first key pair. For now, this is a placeholder value that will be replaced once we have a real key pair generated.
 pub const AUTHOR_PUBLIC_KEY: &str = "RWTk1xXqcTODeYttYMCqEwcLg+KiX+Vpu1v6iV3D0sGabcdef12345678";
 // TODO: Replace with actual public key when generated
 
