@@ -711,7 +711,8 @@ mod tests {
     fn test_unescape_incomplete_hex() {
         // Incomplete hex escape should be passed through literally
         assert_eq!(unescape_strace_string(r#"\x1"#), r#"\x1"#);
-        assert_eq!(unescape_strace_string(r#"path\x1end"#), r#"path\x1end"#);
+        // Note: \x1e would be valid (1e are both hex digits), so use \x1g instead
+        assert_eq!(unescape_strace_string(r#"path\x1gnd"#), r#"path\x1gnd"#);
     }
 
     #[test]
