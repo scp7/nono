@@ -88,6 +88,20 @@ Don't see your tool? nono is agent-agnostic and works with any CLI command:
 nono run --allow . -- my-agent
 ```
 
+## Projects using nono
+
+<table>
+  <tr>
+    <th>Project</th>
+    <th>Repository</th>
+  </tr>
+  <tr>
+    <td><strong>Claude Code</strong><br/>claw-wrap</td>
+    <td><a href="https://github.com/dedene/claw-wrap">GitHub</a></td>
+  </tr>
+</table>
+
+
 ### Shell Alias (Claude Code example)
 
 For quick access, add a shell function:
