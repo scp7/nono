@@ -403,6 +403,68 @@ mod tests {
     }
 
     #[test]
+    fn test_escape_path_injection_via_newline() {
+        // An attacker embeds a newline to break out of the quoted string and inject
+        // a new S-expression: "/tmp/evil\n(allow file-read* (subpath \"/\"))"
+        // Without newline stripping, this would become a standalone rule line.
+        let malicious = "/tmp/evil\n(allow file-read* (subpath \"/\"))";
+        let escaped = escape_path(malicious);
+        assert!(
+            !escaped.contains('\n'),
+            "escaped path must not contain newlines"
+        );
+        // With newlines stripped, the S-expression text stays inside the quoted string
+        // where parentheses are harmless literal characters.
+    }
+
+    #[test]
+    fn test_escape_path_injection_via_quote() {
+        // An attacker embeds a double-quote to terminate the string early and inject
+        // a new rule: /tmp/evil")(allow file-read* (subpath "/"))("
+        let malicious = "/tmp/evil\")(allow file-read* (subpath \"/\"))(\"";
+        let escaped = escape_path(malicious);
+        // Every " in the escaped output must be preceded by \ so Seatbelt
+        // treats it as a literal quote inside the string, not a terminator.
+        let chars: Vec<char> = escaped.chars().collect();
+        for (i, &c) in chars.iter().enumerate() {
+            if c == '"' {
+                assert!(
+                    i > 0 && chars[i - 1] == '\\',
+                    "unescaped quote at position {}",
+                    i
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_generate_profile_malicious_path_no_injection() {
+        let mut caps = CapabilitySet::new();
+        // A path with embedded newline + Seatbelt injection attempt
+        caps.add_fs(FsCapability {
+            original: PathBuf::from("/tmp/evil"),
+            resolved: PathBuf::from("/tmp/evil\n(allow file-read* (subpath \"/\"))"),
+            access: AccessMode::Read,
+            is_file: false,
+            source: CapabilitySource::User,
+        });
+
+        let profile = generate_profile(&caps);
+
+        // The profile must NOT contain the injected rule as a standalone line
+        for line in profile.lines() {
+            if line.contains("(allow file-read*") {
+                // Legitimate read rules contain subpath or literal for the path
+                assert!(
+                    !line.contains("(subpath \"/\")"),
+                    "injected root-read rule must not appear: {}",
+                    line
+                );
+            }
+        }
+    }
+
+    #[test]
     fn test_capability_source_tagging() {
         let mut caps = CapabilitySet::new();
         caps.add_fs(FsCapability {

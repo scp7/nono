@@ -64,7 +64,7 @@ pub fn query_path(path: &Path, requested: AccessMode, caps: &CapabilitySet) -> R
     };
 
     // First, check if this is a sensitive path (CLI security policy)
-    if let Some(matched) = config::check_sensitive_path(&canonical.to_string_lossy()) {
+    if let Some(matched) = config::check_sensitive_path(&canonical.to_string_lossy())? {
         return Ok(QueryResult::Denied {
             reason: "sensitive_path".to_string(),
             details: Some(format!(

@@ -12,10 +12,53 @@ pub mod user;
 pub mod verify;
 pub mod version;
 
-use nono::Result;
+use nono::{NonoError, Result};
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
-use tracing::warn;
+use std::path::{Path, PathBuf};
+
+// ============================================================================
+// Environment variable validation
+// ============================================================================
+
+/// Validate and return the HOME environment variable.
+///
+/// Returns an error if HOME is not set or is not an absolute path.
+/// This prevents attacks where a malicious parent process sets
+/// HOME to a relative or attacker-controlled path, which would
+/// cause deny rules and sensitive path checks to target wrong locations.
+pub fn validated_home() -> Result<String> {
+    let home = std::env::var("HOME").map_err(|_| NonoError::EnvVarValidation {
+        var: "HOME".to_string(),
+        reason: "not set".to_string(),
+    })?;
+
+    if !Path::new(&home).is_absolute() {
+        return Err(NonoError::EnvVarValidation {
+            var: "HOME".to_string(),
+            reason: format!("must be an absolute path, got: {}", home),
+        });
+    }
+
+    Ok(home)
+}
+
+/// Validate and return the TMPDIR environment variable, falling back to /tmp.
+///
+/// Returns an error if TMPDIR is set but is not an absolute path.
+pub fn validated_tmpdir() -> Result<String> {
+    match std::env::var("TMPDIR") {
+        Ok(tmpdir) => {
+            if !Path::new(&tmpdir).is_absolute() {
+                return Err(NonoError::EnvVarValidation {
+                    var: "TMPDIR".to_string(),
+                    reason: format!("must be an absolute path, got: {}", tmpdir),
+                });
+            }
+            Ok(tmpdir)
+        }
+        Err(_) => Ok("/tmp".to_string()),
+    }
+}
 
 // ============================================================================
 // Override system (implemented, not yet integrated)
@@ -149,8 +192,8 @@ pub fn load_effective_config() -> Result<EffectiveConfig> {
 
 /// Check if a path is in the sensitive paths list
 #[allow(dead_code)]
-pub fn is_sensitive_path(path: &str, config: &EffectiveConfig) -> bool {
-    let home = std::env::var("HOME").unwrap_or_default();
+pub fn is_sensitive_path(path: &str, config: &EffectiveConfig) -> Result<bool> {
+    let home = validated_home()?;
     let expanded = path.replace('~', &home);
 
     for sensitive in &config.sensitive_paths {
@@ -160,12 +203,12 @@ pub fn is_sensitive_path(path: &str, config: &EffectiveConfig) -> bool {
         {
             // Check if explicitly allowed
             if config.allowed_sensitive.contains_key(sensitive) {
-                return false;
+                return Ok(false);
             }
-            return true;
+            return Ok(true);
         }
     }
-    false
+    Ok(false)
 }
 
 /// Check if a command is in the dangerous commands list
@@ -208,60 +251,28 @@ pub fn user_state_dir() -> Option<PathBuf> {
 // ============================================================================
 
 /// Get all sensitive paths from embedded config
-pub fn get_sensitive_paths() -> Vec<String> {
-    match embedded::load_security_lists() {
-        Ok(lists) => lists.all_sensitive_paths().into_iter().collect(),
-        Err(err) => {
-            warn!(
-                "Failed to load embedded security lists for sensitive paths: {}",
-                err
-            );
-            Vec::new()
-        }
-    }
+pub fn get_sensitive_paths() -> Result<Vec<String>> {
+    let lists = embedded::load_security_lists()?;
+    Ok(lists.all_sensitive_paths().into_iter().collect())
 }
 
 /// Get all dangerous commands from embedded config
-pub fn get_dangerous_commands() -> HashSet<String> {
-    match embedded::load_security_lists() {
-        Ok(lists) => lists.all_dangerous_commands(),
-        Err(err) => {
-            warn!(
-                "Failed to load embedded security lists for dangerous commands: {}",
-                err
-            );
-            HashSet::new()
-        }
-    }
+pub fn get_dangerous_commands() -> Result<HashSet<String>> {
+    let lists = embedded::load_security_lists()?;
+    Ok(lists.all_dangerous_commands())
 }
 
 /// Get system read paths for the current platform
-pub fn get_system_read_paths() -> Vec<String> {
-    match embedded::load_security_lists() {
-        Ok(lists) => lists.system_paths_for_platform(),
-        Err(err) => {
-            warn!(
-                "Failed to load embedded security lists for system read paths: {}",
-                err
-            );
-            Vec::new()
-        }
-    }
+pub fn get_system_read_paths() -> Result<Vec<String>> {
+    let lists = embedded::load_security_lists()?;
+    Ok(lists.system_paths_for_platform())
 }
 
 /// Get macOS writable system paths (e.g., /tmp, /private/var/folders)
 #[cfg(target_os = "macos")]
-pub fn get_system_writable_paths() -> Vec<String> {
-    match embedded::load_security_lists() {
-        Ok(lists) => lists.macos_writable_paths(),
-        Err(err) => {
-            warn!(
-                "Failed to load embedded security lists for writable system paths: {}",
-                err
-            );
-            Vec::new()
-        }
-    }
+pub fn get_system_writable_paths() -> Result<Vec<String>> {
+    let lists = embedded::load_security_lists()?;
+    Ok(lists.macos_writable_paths())
 }
 
 /// Check if a command is blocked by the default dangerous commands list
@@ -270,7 +281,7 @@ pub fn check_blocked_command(
     cmd: impl AsRef<std::ffi::OsStr>,
     allowed_commands: &[String],
     extra_blocked: &[String],
-) -> Option<String> {
+) -> Result<Option<String>> {
     use std::ffi::OsStr;
     use std::path::Path;
 
@@ -281,30 +292,30 @@ pub fn check_blocked_command(
 
     // Check if explicitly allowed (overrides default blocklist)
     if allowed_commands.iter().any(|a| OsStr::new(a) == binary_os) {
-        return None;
+        return Ok(None);
     }
 
     // Check extra blocked commands first
     if extra_blocked.iter().any(|b| OsStr::new(b) == binary_os) {
-        return Some(binary_os.to_string_lossy().into_owned());
+        return Ok(Some(binary_os.to_string_lossy().into_owned()));
     }
 
     // Check default dangerous commands list from config
-    let dangerous = get_dangerous_commands();
+    let dangerous = get_dangerous_commands()?;
     let binary_str = binary_os.to_string_lossy();
     if dangerous.contains(binary_str.as_ref()) {
-        return Some(binary_str.into_owned());
+        return Ok(Some(binary_str.into_owned()));
     }
 
-    None
+    Ok(None)
 }
 
 /// Check if a path is in the sensitive paths list (for `nono why` command)
 /// Returns Some(reason) if blocked, None if not in list
-pub fn check_sensitive_path(path_str: &str) -> Option<&'static str> {
+pub fn check_sensitive_path(path_str: &str) -> Result<Option<&'static str>> {
     use security_lists::sensitive_paths_by_category;
 
-    let home = std::env::var("HOME").unwrap_or_default();
+    let home = validated_home()?;
     let expanded = if path_str.starts_with("~/") {
         path_str.replacen("~", &home, 1)
     } else if path_str == "~" {
@@ -313,21 +324,9 @@ pub fn check_sensitive_path(path_str: &str) -> Option<&'static str> {
         path_str.to_string()
     };
 
-    // Load security lists and get paths organized by category
-    let lists = match embedded::load_security_lists() {
-        Ok(l) => l,
-        Err(err) => {
-            warn!(
-                "Failed to load embedded security lists while checking sensitive path: {}",
-                err
-            );
-            return None;
-        }
-    };
-
+    let lists = embedded::load_security_lists()?;
     let categories = sensitive_paths_by_category(&lists);
 
-    // Check each category's paths
     for (category_name, paths) in categories {
         for sensitive in paths {
             let expanded_sensitive = sensitive.replace('~', &home);
@@ -335,12 +334,12 @@ pub fn check_sensitive_path(path_str: &str) -> Option<&'static str> {
             if expanded == expanded_sensitive
                 || expanded.starts_with(&format!("{}/", expanded_sensitive))
             {
-                return Some(category_name);
+                return Ok(Some(category_name));
             }
         }
     }
 
-    None
+    Ok(None)
 }
 
 #[cfg(test)]

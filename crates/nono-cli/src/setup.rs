@@ -37,7 +37,7 @@ impl SetupRunner {
         self.test_sandbox_support()?;
 
         // Show what nono protects
-        self.show_protection_summary();
+        self.show_protection_summary()?;
 
         // Show built-in profiles
         self.show_builtin_profiles();
@@ -269,12 +269,12 @@ impl SetupRunner {
         Ok(())
     }
 
-    fn show_protection_summary(&self) {
+    fn show_protection_summary(&self) -> Result<()> {
         println!("[3/{}] Default protections...", self.total_phases());
 
         // Get sensitive paths from config
-        let sensitive_paths = config::get_sensitive_paths();
-        let dangerous_commands = config::get_dangerous_commands();
+        let sensitive_paths = config::get_sensitive_paths()?;
+        let dangerous_commands = config::get_dangerous_commands()?;
 
         println!(
             "  * {} sensitive paths blocked by default:",
@@ -296,6 +296,8 @@ impl SetupRunner {
 
         println!("  * Network access: allowed by default (use --net-block to disable)");
         println!();
+
+        Ok(())
     }
 
     fn show_builtin_profiles(&self) {

@@ -249,41 +249,49 @@ fn is_valid_profile_name(name: &str) -> bool {
 ///
 /// If $HOME cannot be determined and the path uses $HOME, $XDG_CONFIG_HOME, or $XDG_DATA_HOME,
 /// the unexpanded variable is left in place (which will cause the path to not exist).
-pub fn expand_vars(path: &str, workdir: &Path) -> PathBuf {
-    let home = xdg_home::home_dir().map(|p| p.to_string_lossy().to_string());
+pub fn expand_vars(path: &str, workdir: &Path) -> Result<PathBuf> {
+    use crate::config;
+
+    let home = config::validated_home()?;
 
     let expanded = path.replace("$WORKDIR", &workdir.to_string_lossy());
 
     // Expand $TMPDIR and $UID
-    let tmpdir = std::env::var("TMPDIR")
-        .unwrap_or_else(|_| std::env::temp_dir().to_string_lossy().to_string());
+    let tmpdir = config::validated_tmpdir()?;
     let uid = nix::unistd::getuid().to_string();
     let expanded = expanded
         .replace("$TMPDIR", tmpdir.trim_end_matches('/'))
         .replace("$UID", &uid);
 
-    let expanded = if let Some(ref h) = home {
-        let xdg_config = std::env::var("XDG_CONFIG_HOME")
-            .unwrap_or_else(|_| format!("{}", PathBuf::from(h).join(".config").display()));
-        let xdg_data = std::env::var("XDG_DATA_HOME").unwrap_or_else(|_| {
-            format!(
-                "{}",
-                PathBuf::from(h).join(".local").join("share").display()
-            )
+    let xdg_config = std::env::var("XDG_CONFIG_HOME")
+        .unwrap_or_else(|_| format!("{}", PathBuf::from(&home).join(".config").display()));
+    let xdg_data = std::env::var("XDG_DATA_HOME").unwrap_or_else(|_| {
+        format!(
+            "{}",
+            PathBuf::from(&home).join(".local").join("share").display()
+        )
+    });
+
+    // Validate XDG paths are absolute
+    if !Path::new(&xdg_config).is_absolute() {
+        return Err(NonoError::EnvVarValidation {
+            var: "XDG_CONFIG_HOME".to_string(),
+            reason: format!("must be an absolute path, got: {}", xdg_config),
         });
+    }
+    if !Path::new(&xdg_data).is_absolute() {
+        return Err(NonoError::EnvVarValidation {
+            var: "XDG_DATA_HOME".to_string(),
+            reason: format!("must be an absolute path, got: {}", xdg_data),
+        });
+    }
 
-        expanded
-            .replace("$HOME", h)
-            .replace("$XDG_CONFIG_HOME", &xdg_config)
-            .replace("$XDG_DATA_HOME", &xdg_data)
-    } else {
-        // If home is not available, leave $HOME variables unexpanded
-        // This will cause the path to not exist, which is handled gracefully
-        tracing::warn!("Could not determine home directory for variable expansion");
-        expanded
-    };
+    let expanded = expanded
+        .replace("$HOME", &home)
+        .replace("$XDG_CONFIG_HOME", &xdg_config)
+        .replace("$XDG_DATA_HOME", &xdg_data);
 
-    PathBuf::from(expanded)
+    Ok(PathBuf::from(expanded))
 }
 
 /// List available profiles (built-in + user)
@@ -335,10 +343,10 @@ mod tests {
         let workdir = PathBuf::from("/projects/myapp");
         env::set_var("HOME", "/home/user");
 
-        let expanded = expand_vars("$WORKDIR/src", &workdir);
+        let expanded = expand_vars("$WORKDIR/src", &workdir).expect("valid env");
         assert_eq!(expanded, PathBuf::from("/projects/myapp/src"));
 
-        let expanded = expand_vars("$HOME/.config", &workdir);
+        let expanded = expand_vars("$HOME/.config", &workdir).expect("valid env");
         assert_eq!(expanded, PathBuf::from("/home/user/.config"));
     }
 

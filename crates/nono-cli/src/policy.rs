@@ -108,26 +108,27 @@ fn group_matches_platform(group: &Group) -> bool {
 // Path expansion
 // ============================================================================
 
-/// Expand `~` to $HOME and `$TMPDIR` to the environment variable value
-fn expand_path(path_str: &str) -> PathBuf {
+/// Expand `~` to $HOME and `$TMPDIR` to the environment variable value.
+///
+/// Returns an error if HOME or TMPDIR are set to non-absolute paths.
+fn expand_path(path_str: &str) -> Result<PathBuf> {
+    use crate::config;
+
     let expanded = if let Some(rest) = path_str.strip_prefix("~/") {
-        if let Ok(home) = std::env::var("HOME") {
-            format!("{}/{}", home, rest)
-        } else {
-            path_str.to_string()
-        }
+        let home = config::validated_home()?;
+        format!("{}/{}", home, rest)
     } else if path_str == "~" {
-        std::env::var("HOME").unwrap_or_else(|_| path_str.to_string())
+        config::validated_home()?
     } else if path_str == "$TMPDIR" {
-        std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string())
+        config::validated_tmpdir()?
     } else if let Some(rest) = path_str.strip_prefix("$TMPDIR/") {
-        let tmpdir = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
+        let tmpdir = config::validated_tmpdir()?;
         format!("{}/{}", tmpdir, rest)
     } else {
         path_str.to_string()
     };
 
-    PathBuf::from(expanded)
+    Ok(PathBuf::from(expanded))
 }
 
 /// Escape a path for Seatbelt profile strings.
@@ -231,20 +232,20 @@ fn resolve_single_group(group_name: &str, group: &Group, caps: &mut CapabilitySe
     // Process allow operations
     if let Some(allow) = &group.allow {
         for path_str in &allow.read {
-            add_fs_capability(path_str, AccessMode::Read, &source, caps);
+            add_fs_capability(path_str, AccessMode::Read, &source, caps)?;
         }
         for path_str in &allow.write {
-            add_fs_capability(path_str, AccessMode::Write, &source, caps);
+            add_fs_capability(path_str, AccessMode::Write, &source, caps)?;
         }
         for path_str in &allow.readwrite {
-            add_fs_capability(path_str, AccessMode::ReadWrite, &source, caps);
+            add_fs_capability(path_str, AccessMode::ReadWrite, &source, caps)?;
         }
     }
 
     // Process deny operations
     if let Some(deny) = &group.deny {
         for path_str in &deny.access {
-            add_deny_access_rules(path_str, caps);
+            add_deny_access_rules(path_str, caps)?;
         }
 
         if deny.unlink {
@@ -265,7 +266,7 @@ fn resolve_single_group(group_name: &str, group: &Group, caps: &mut CapabilitySe
     // Process symlink pairs (macOS-specific path handling)
     if let Some(pairs) = &group.symlink_pairs {
         for symlink in pairs.keys() {
-            let expanded = expand_path(symlink);
+            let expanded = expand_path(symlink)?;
             let escaped = escape_seatbelt_path(&expanded.to_string_lossy());
             caps.add_platform_rule(format!("(allow file-read* (subpath \"{}\"))", escaped));
         }
@@ -280,8 +281,8 @@ fn add_fs_capability(
     mode: AccessMode,
     source: &CapabilitySource,
     caps: &mut CapabilitySet,
-) {
-    let path = expand_path(path_str);
+) -> Result<()> {
+    let path = expand_path(path_str)?;
 
     if !path.exists() {
         debug!(
@@ -289,7 +290,7 @@ fn add_fs_capability(
             path_str,
             path.display()
         );
-        return;
+        return Ok(());
     }
 
     if path.is_dir() {
@@ -318,6 +319,8 @@ fn add_fs_capability(
             path_str
         );
     }
+
+    Ok(())
 }
 
 /// Add deny.access rules as platform-specific Seatbelt rules.
@@ -329,8 +332,8 @@ fn add_fs_capability(
 ///
 /// Uses `subpath` for directories, `literal` for files.
 /// For non-existent paths, defaults to `subpath` (defensive).
-fn add_deny_access_rules(path_str: &str, caps: &mut CapabilitySet) {
-    let path = expand_path(path_str);
+fn add_deny_access_rules(path_str: &str, caps: &mut CapabilitySet) -> Result<()> {
+    let path = expand_path(path_str)?;
     let escaped = escape_seatbelt_path(&path.to_string_lossy());
 
     // Determine filter type: literal for files, subpath for directories
@@ -344,6 +347,8 @@ fn add_deny_access_rules(path_str: &str, caps: &mut CapabilitySet) {
     caps.add_platform_rule(format!("(allow file-read-metadata ({}))", filter));
     caps.add_platform_rule(format!("(deny file-read-data ({}))", filter));
     caps.add_platform_rule(format!("(deny file-write* ({}))", filter));
+
+    Ok(())
 }
 
 /// Apply unlink override rules for all writable paths in the capability set.
@@ -539,20 +544,20 @@ mod tests {
 
     #[test]
     fn test_expand_path_tilde() {
-        let path = expand_path("~/.ssh");
+        let path = expand_path("~/.ssh").expect("HOME must be valid");
         assert!(path.to_string_lossy().contains(".ssh"));
         assert!(!path.to_string_lossy().starts_with("~"));
     }
 
     #[test]
     fn test_expand_path_tmpdir() {
-        let path = expand_path("$TMPDIR");
+        let path = expand_path("$TMPDIR").expect("TMPDIR must be valid");
         assert!(!path.to_string_lossy().starts_with("$"));
     }
 
     #[test]
     fn test_expand_path_absolute() {
-        let path = expand_path("/usr/bin");
+        let path = expand_path("/usr/bin").expect("absolute path needs no env");
         assert_eq!(path, PathBuf::from("/usr/bin"));
     }
 
@@ -577,7 +582,8 @@ mod tests {
     #[test]
     fn test_deny_access_generates_all_three_rules() {
         let mut caps = CapabilitySet::new();
-        add_deny_access_rules("/nonexistent/test/deny", &mut caps);
+        add_deny_access_rules("/nonexistent/test/deny", &mut caps)
+            .expect("expand_path should succeed for absolute paths");
 
         let rules = caps.platform_rules();
         assert_eq!(rules.len(), 3);
@@ -603,5 +609,31 @@ mod tests {
             "/pathwithreturns"
         );
         assert_eq!(escape_seatbelt_path("/path\0with\0nulls"), "/pathwithnulls");
+    }
+
+    #[test]
+    fn test_escape_seatbelt_path_injection_via_newline() {
+        let malicious = "/tmp/evil\n(allow file-read* (subpath \"/\"))";
+        let escaped = escape_seatbelt_path(malicious);
+        assert!(
+            !escaped.contains('\n'),
+            "escaped path must not contain newlines"
+        );
+    }
+
+    #[test]
+    fn test_escape_seatbelt_path_injection_via_quote() {
+        let malicious = "/tmp/evil\")(allow file-read* (subpath \"/\"))(\"";
+        let escaped = escape_seatbelt_path(malicious);
+        let chars: Vec<char> = escaped.chars().collect();
+        for (i, &c) in chars.iter().enumerate() {
+            if c == '"' {
+                assert!(
+                    i > 0 && chars[i - 1] == '\\',
+                    "unescaped quote at position {}",
+                    i
+                );
+            }
+        }
     }
 }

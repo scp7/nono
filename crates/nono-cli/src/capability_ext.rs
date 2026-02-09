@@ -96,7 +96,7 @@ impl CapabilitySetExt for CapabilitySet {
         }
 
         // Add system read paths from config (required for executables to run)
-        add_system_read_paths(&mut caps);
+        add_system_read_paths(&mut caps)?;
 
         Ok(caps)
     }
@@ -126,7 +126,7 @@ impl CapabilitySetExt for CapabilitySet {
 
         // Directories with read+write access
         for path_template in &fs.allow {
-            let path = expand_vars(path_template, workdir);
+            let path = expand_vars(path_template, workdir)?;
             if path.exists() {
                 let cap = FsCapability::new_dir(&path, AccessMode::ReadWrite)?;
                 caps.add_fs(cap);
@@ -141,7 +141,7 @@ impl CapabilitySetExt for CapabilitySet {
 
         // Directories with read-only access
         for path_template in &fs.read {
-            let path = expand_vars(path_template, workdir);
+            let path = expand_vars(path_template, workdir)?;
             if path.exists() {
                 let cap = FsCapability::new_dir(&path, AccessMode::Read)?;
                 caps.add_fs(cap);
@@ -156,7 +156,7 @@ impl CapabilitySetExt for CapabilitySet {
 
         // Directories with write-only access
         for path_template in &fs.write {
-            let path = expand_vars(path_template, workdir);
+            let path = expand_vars(path_template, workdir)?;
             if path.exists() {
                 let cap = FsCapability::new_dir(&path, AccessMode::Write)?;
                 caps.add_fs(cap);
@@ -171,7 +171,7 @@ impl CapabilitySetExt for CapabilitySet {
 
         // Single files with read+write access
         for path_template in &fs.allow_file {
-            let path = expand_vars(path_template, workdir);
+            let path = expand_vars(path_template, workdir)?;
             if path.exists() {
                 let cap = FsCapability::new_file(&path, AccessMode::ReadWrite)?;
                 caps.add_fs(cap);
@@ -186,7 +186,7 @@ impl CapabilitySetExt for CapabilitySet {
 
         // Single files with read-only access
         for path_template in &fs.read_file {
-            let path = expand_vars(path_template, workdir);
+            let path = expand_vars(path_template, workdir)?;
             if path.exists() {
                 let cap = FsCapability::new_file(&path, AccessMode::Read)?;
                 caps.add_fs(cap);
@@ -201,7 +201,7 @@ impl CapabilitySetExt for CapabilitySet {
 
         // Single files with write-only access
         for path_template in &fs.write_file {
-            let path = expand_vars(path_template, workdir);
+            let path = expand_vars(path_template, workdir)?;
             if path.exists() {
                 let cap = FsCapability::new_file(&path, AccessMode::Write)?;
                 caps.add_fs(cap);
@@ -225,7 +225,7 @@ impl CapabilitySetExt for CapabilitySet {
         // Only add legacy system paths if NO groups were specified.
         // Groups handle system paths via system_read_macos, system_write_macos, etc.
         if !has_groups {
-            add_system_read_paths(&mut caps);
+            add_system_read_paths(&mut caps)?;
         }
 
         // Apply deferred unlink overrides now that ALL writable paths are in place
@@ -304,18 +304,16 @@ fn add_cli_overrides(caps: &mut CapabilitySet, args: &SandboxArgs) -> Result<()>
     Ok(())
 }
 
-/// Expand `~` prefix to the user's home directory.
-fn expand_tilde(path_str: &str) -> std::path::PathBuf {
+/// Expand `~` prefix to the user's validated home directory.
+fn expand_tilde(path_str: &str) -> Result<std::path::PathBuf> {
     if let Some(rest) = path_str.strip_prefix("~/") {
-        if let Ok(home) = std::env::var("HOME") {
-            return std::path::PathBuf::from(home).join(rest);
-        }
+        let home = config::validated_home()?;
+        return Ok(std::path::PathBuf::from(home).join(rest));
     } else if path_str == "~" {
-        if let Ok(home) = std::env::var("HOME") {
-            return std::path::PathBuf::from(home);
-        }
+        let home = config::validated_home()?;
+        return Ok(std::path::PathBuf::from(home));
     }
-    std::path::PathBuf::from(path_str)
+    Ok(std::path::PathBuf::from(path_str))
 }
 
 /// Add system read paths from security config
@@ -324,11 +322,11 @@ fn expand_tilde(path_str: &str) -> std::path::PathBuf {
 /// On macOS, also adds writable system paths (e.g., /tmp, /private/var/folders)
 /// needed for programs to create temp files.
 /// The library is a pure sandbox primitive - all policy lives in CLI.
-fn add_system_read_paths(caps: &mut CapabilitySet) {
-    let system_paths = config::get_system_read_paths();
+fn add_system_read_paths(caps: &mut CapabilitySet) -> Result<()> {
+    let system_paths = config::get_system_read_paths()?;
 
     for path_str in system_paths {
-        let path = expand_tilde(&path_str);
+        let path = expand_tilde(&path_str)?;
         if path.exists() && !caps.path_covered(&path) {
             match FsCapability::new_dir(&path, AccessMode::Read) {
                 Ok(mut cap) => {
@@ -349,9 +347,9 @@ fn add_system_read_paths(caps: &mut CapabilitySet) {
     // does not mean we can skip adding Write access for a child path.
     #[cfg(target_os = "macos")]
     {
-        let writable_paths = config::get_system_writable_paths();
+        let writable_paths = config::get_system_writable_paths()?;
         for path_str in writable_paths {
-            let path = expand_tilde(&path_str);
+            let path = expand_tilde(&path_str)?;
             if path.exists() {
                 match FsCapability::new_dir(&path, AccessMode::ReadWrite) {
                     Ok(mut cap) => {
@@ -366,7 +364,8 @@ fn add_system_read_paths(caps: &mut CapabilitySet) {
         }
 
         // Add $TMPDIR explicitly (dynamic path, usually under /private/var/folders)
-        if let Ok(tmpdir) = std::env::var("TMPDIR") {
+        let tmpdir = config::validated_tmpdir()?;
+        {
             let path = std::path::PathBuf::from(&tmpdir);
             if path.exists() {
                 match FsCapability::new_dir(&path, AccessMode::ReadWrite) {
@@ -381,6 +380,8 @@ fn add_system_read_paths(caps: &mut CapabilitySet) {
             }
         }
     }
+
+    Ok(())
 }
 
 #[cfg(test)]

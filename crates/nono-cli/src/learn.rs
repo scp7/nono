@@ -436,7 +436,7 @@ fn process_accesses(
     let mut result = LearnResult::new();
 
     // Get system paths that are already allowed
-    let system_read_paths = config::get_system_read_paths();
+    let system_read_paths = config::get_system_read_paths()?;
     let system_read_set: HashSet<&str> = system_read_paths.iter().map(|s| s.as_str()).collect();
 
     // Get profile paths if available
@@ -464,7 +464,7 @@ fn process_accesses(
         seen_paths.insert(canonical.clone());
 
         // Check if covered by system paths
-        if is_covered_by_set(&canonical, &system_read_set) {
+        if is_covered_by_set(&canonical, &system_read_set)? {
             if show_all {
                 result.system_covered.insert(canonical);
             }
@@ -472,7 +472,7 @@ fn process_accesses(
         }
 
         // Check if covered by profile
-        if is_covered_by_profile(&canonical, &profile_paths) {
+        if is_covered_by_profile(&canonical, &profile_paths)? {
             if show_all {
                 result.profile_covered.insert(canonical);
             }
@@ -507,55 +507,55 @@ fn process_accesses(
 
 /// Check if a path is covered by a set of allowed paths
 #[cfg(target_os = "linux")]
-fn is_covered_by_set(path: &Path, allowed: &HashSet<&str>) -> bool {
+fn is_covered_by_set(path: &Path, allowed: &HashSet<&str>) -> Result<bool> {
     for allowed_path in allowed {
-        let allowed_expanded = expand_home(allowed_path);
+        let allowed_expanded = expand_home(allowed_path)?;
         if let Ok(allowed_canonical) = std::fs::canonicalize(&allowed_expanded) {
             if path.starts_with(&allowed_canonical) {
-                return true;
+                return Ok(true);
             }
         }
         // Also check without canonicalization for paths that may not exist
         let allowed_path_buf = PathBuf::from(&allowed_expanded);
         if path.starts_with(&allowed_path_buf) {
-            return true;
+            return Ok(true);
         }
     }
-    false
+    Ok(false)
 }
 
 /// Check if a path is covered by profile paths
 #[cfg(target_os = "linux")]
-fn is_covered_by_profile(path: &Path, profile_paths: &HashSet<String>) -> bool {
+fn is_covered_by_profile(path: &Path, profile_paths: &HashSet<String>) -> Result<bool> {
     for profile_path in profile_paths {
-        let expanded = expand_home(profile_path);
+        let expanded = expand_home(profile_path)?;
         if let Ok(canonical) = std::fs::canonicalize(&expanded) {
             if path.starts_with(&canonical) {
-                return true;
+                return Ok(true);
             }
         }
         let path_buf = PathBuf::from(&expanded);
         if path.starts_with(&path_buf) {
-            return true;
+            return Ok(true);
         }
     }
-    false
+    Ok(false)
 }
 
 /// Expand ~ to home directory
 #[cfg(target_os = "linux")]
-fn expand_home(path: &str) -> String {
+fn expand_home(path: &str) -> Result<String> {
+    use crate::config;
+
     if path.starts_with('~') {
-        if let Ok(home) = std::env::var("HOME") {
-            return path.replacen('~', &home, 1);
-        }
+        let home = config::validated_home()?;
+        return Ok(path.replacen('~', &home, 1));
     }
     if path.starts_with("$HOME") {
-        if let Ok(home) = std::env::var("HOME") {
-            return path.replacen("$HOME", &home, 1);
-        }
+        let home = config::validated_home()?;
+        return Ok(path.replacen("$HOME", &home, 1));
     }
-    path.to_string()
+    Ok(path.to_string())
 }
 
 /// Collapse a file path to its parent directory for cleaner output
@@ -630,9 +630,15 @@ mod tests {
     #[test]
     fn test_expand_home() {
         std::env::set_var("HOME", "/home/test");
-        assert_eq!(expand_home("~/foo"), "/home/test/foo");
-        assert_eq!(expand_home("$HOME/bar"), "/home/test/bar");
-        assert_eq!(expand_home("/absolute/path"), "/absolute/path");
+        assert_eq!(expand_home("~/foo").expect("valid home"), "/home/test/foo");
+        assert_eq!(
+            expand_home("$HOME/bar").expect("valid home"),
+            "/home/test/bar"
+        );
+        assert_eq!(
+            expand_home("/absolute/path").expect("no expansion needed"),
+            "/absolute/path"
+        );
     }
 
     #[test]
