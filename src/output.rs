@@ -10,13 +10,8 @@ use std::path::Path;
 
 /// Hedgehog puns for the banner
 const QUOTES: &[&str] = &[
-    "Trust in the hog",
-    "Curled up and secure",
+    "Trust in the nono",
     "The opposite of yolo",
-    "Prickly about permissions",
-    "No hoggin' resources",
-    "All your base are belong to us",
-    "Rolling with restrictions",
 ];
 
 /// Print the nono banner with hedgehog mascot
@@ -25,8 +20,9 @@ pub fn print_banner(silent: bool) {
         return;
     }
 
+    let mut rng = rand::rng();
     let quote = QUOTES
-        .choose(&mut rand::rng())
+        .choose(&mut rng)
         .unwrap_or(&"The opposite of yolo");
 
     let version = env!("CARGO_PKG_VERSION");
