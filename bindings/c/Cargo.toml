@@ -1,0 +1,21 @@
+[package]
+name = "nono-ffi"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "C FFI bindings for nono capability-based sandboxing library"
+publish = false
+
+[lib]
+name = "nono_ffi"
+crate-type = ["cdylib", "staticlib"]
+
+[dependencies]
+nono = { path = "../../crates/nono" }
+
+[build-dependencies]
+cbindgen.workspace = true

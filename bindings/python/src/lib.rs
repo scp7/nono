@@ -243,8 +243,11 @@ impl CapabilitySet {
     ///
     /// On macOS, this is a Seatbelt S-expression string injected verbatim
     /// into the generated profile. Ignored on Linux.
-    fn platform_rule(&mut self, rule: &str) {
-        self.inner.add_platform_rule(rule);
+    /// Returns an error if the rule is malformed or grants root-level access.
+    fn platform_rule(&mut self, rule: &str) -> PyResult<()> {
+        self.inner
+            .add_platform_rule(rule)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
     }
 
     /// Remove duplicate filesystem capabilities, keeping the highest access level.

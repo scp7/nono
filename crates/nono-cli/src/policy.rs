@@ -134,15 +134,16 @@ fn expand_path(path_str: &str) -> Result<PathBuf> {
 /// Escape a path for Seatbelt profile strings.
 ///
 /// Paths are placed inside double-quoted S-expression strings where `\` and `"`
-/// are the significant characters. Control characters are stripped since they
-/// cannot appear in valid filesystem paths and could disrupt profile parsing.
+/// are the significant characters. All control characters (0x00-0x1F, 0x7F, and
+/// Unicode control chars) are stripped since they cannot appear in valid filesystem
+/// paths and could disrupt Seatbelt's S-expression parser.
 fn escape_seatbelt_path(path: &str) -> String {
     let mut result = String::with_capacity(path.len());
     for c in path.chars() {
         match c {
             '\\' => result.push_str("\\\\"),
             '"' => result.push_str("\\\""),
-            '\n' | '\r' | '\0' => {}
+            c if c.is_control() => {}
             _ => result.push(c),
         }
     }
@@ -249,7 +250,7 @@ fn resolve_single_group(group_name: &str, group: &Group, caps: &mut CapabilitySe
         }
 
         if deny.unlink {
-            caps.add_platform_rule("(deny file-write-unlink)");
+            caps.add_platform_rule("(deny file-write-unlink)")?;
         }
 
         if deny.unlink_override_for_user_writable {
@@ -268,7 +269,7 @@ fn resolve_single_group(group_name: &str, group: &Group, caps: &mut CapabilitySe
         for symlink in pairs.keys() {
             let expanded = expand_path(symlink)?;
             let escaped = escape_seatbelt_path(&expanded.to_string_lossy());
-            caps.add_platform_rule(format!("(allow file-read* (subpath \"{}\"))", escaped));
+            caps.add_platform_rule(format!("(allow file-read* (subpath \"{}\"))", escaped))?;
         }
     }
 
@@ -344,9 +345,9 @@ fn add_deny_access_rules(path_str: &str, caps: &mut CapabilitySet) -> Result<()>
         format!("subpath \"{}\"", escaped)
     };
 
-    caps.add_platform_rule(format!("(allow file-read-metadata ({}))", filter));
-    caps.add_platform_rule(format!("(deny file-read-data ({}))", filter));
-    caps.add_platform_rule(format!("(deny file-write* ({}))", filter));
+    caps.add_platform_rule(format!("(allow file-read-metadata ({}))", filter))?;
+    caps.add_platform_rule(format!("(deny file-read-data ({}))", filter))?;
+    caps.add_platform_rule(format!("(deny file-write* ({}))", filter))?;
 
     Ok(())
 }
@@ -369,10 +370,14 @@ pub fn apply_unlink_overrides(caps: &mut CapabilitySet) {
 
     for path in writable_paths {
         let escaped = escape_seatbelt_path(&path.to_string_lossy());
-        caps.add_platform_rule(format!(
+        // These rules are well-formed S-expressions for user-granted writable paths,
+        // so validation should not fail. Log and skip on error to avoid breaking the sandbox.
+        if let Err(e) = caps.add_platform_rule(format!(
             "(allow file-write-unlink (subpath \"{}\"))",
             escaped
-        ));
+        )) {
+            tracing::warn!("Skipping unlink override rule: {}", e);
+        }
     }
 }
 
@@ -609,6 +614,17 @@ mod tests {
             "/pathwithreturns"
         );
         assert_eq!(escape_seatbelt_path("/path\0with\0nulls"), "/pathwithnulls");
+        // All control characters must be stripped
+        assert_eq!(escape_seatbelt_path("/path\twith\ttabs"), "/pathwithtabs");
+        assert_eq!(
+            escape_seatbelt_path("/path\x0bwith\x0cfeeds"),
+            "/pathwithfeeds"
+        );
+        assert_eq!(
+            escape_seatbelt_path("/path\x1bwith\x1bescape"),
+            "/pathwithescape"
+        );
+        assert_eq!(escape_seatbelt_path("/path\x7fwith\x7fdel"), "/pathwithdel");
     }
 
     #[test]

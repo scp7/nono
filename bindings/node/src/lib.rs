@@ -158,9 +158,12 @@ impl JsCapabilitySet {
     /// Add a raw platform-specific sandbox rule.
     ///
     /// On macOS, this is a Seatbelt S-expression string. Ignored on Linux.
+    /// Returns an error if the rule is malformed or grants root-level access.
     #[napi]
-    pub fn platform_rule(&mut self, rule: String) {
-        self.inner.add_platform_rule(rule);
+    pub fn platform_rule(&mut self, rule: String) -> napi::Result<()> {
+        self.inner
+            .add_platform_rule(rule)
+            .map_err(|e| napi::Error::from_reason(e.to_string()))
     }
 
     /// Remove duplicate filesystem capabilities, keeping the highest access level.

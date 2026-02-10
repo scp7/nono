@@ -7,9 +7,35 @@ use crate::cli::SandboxArgs;
 use crate::config;
 use crate::policy;
 use crate::profile::{expand_vars, Profile};
-use nono::{AccessMode, CapabilitySet, CapabilitySource, FsCapability, Result};
+use nono::{AccessMode, CapabilitySet, CapabilitySource, FsCapability, NonoError, Result};
 use std::path::Path;
 use tracing::{debug, warn};
+
+/// Try to create a directory capability, warning and skipping on PathNotFound.
+/// Propagates all other errors.
+fn try_new_dir(path: &Path, access: AccessMode, label: &str) -> Result<Option<FsCapability>> {
+    match FsCapability::new_dir(path, access) {
+        Ok(cap) => Ok(Some(cap)),
+        Err(NonoError::PathNotFound(_)) => {
+            warn!("{}: {}", label, path.display());
+            Ok(None)
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// Try to create a file capability, warning and skipping on PathNotFound.
+/// Propagates all other errors.
+fn try_new_file(path: &Path, access: AccessMode, label: &str) -> Result<Option<FsCapability>> {
+    match FsCapability::new_file(path, access) {
+        Ok(cap) => Ok(Some(cap)),
+        Err(NonoError::PathNotFound(_)) => {
+            warn!("{}: {}", label, path.display());
+            Ok(None)
+        }
+        Err(e) => Err(e),
+    }
+}
 
 /// Extension trait for CapabilitySet to add CLI-specific construction methods
 pub trait CapabilitySetExt {
@@ -25,59 +51,46 @@ impl CapabilitySetExt for CapabilitySet {
     fn from_args(args: &SandboxArgs) -> Result<CapabilitySet> {
         let mut caps = CapabilitySet::new();
 
-        // Directory permissions
+        // Directory permissions (canonicalize handles existence check atomically)
         for path in &args.allow {
-            if path.exists() {
-                let cap = FsCapability::new_dir(path, AccessMode::ReadWrite)?;
+            if let Some(cap) =
+                try_new_dir(path, AccessMode::ReadWrite, "Skipping non-existent path")?
+            {
                 caps.add_fs(cap);
-            } else {
-                warn!("Skipping non-existent path: {}", path.display());
             }
         }
 
         for path in &args.read {
-            if path.exists() {
-                let cap = FsCapability::new_dir(path, AccessMode::Read)?;
+            if let Some(cap) = try_new_dir(path, AccessMode::Read, "Skipping non-existent path")? {
                 caps.add_fs(cap);
-            } else {
-                warn!("Skipping non-existent path: {}", path.display());
             }
         }
 
         for path in &args.write {
-            if path.exists() {
-                let cap = FsCapability::new_dir(path, AccessMode::Write)?;
+            if let Some(cap) = try_new_dir(path, AccessMode::Write, "Skipping non-existent path")? {
                 caps.add_fs(cap);
-            } else {
-                warn!("Skipping non-existent path: {}", path.display());
             }
         }
 
         // Single file permissions
         for path in &args.allow_file {
-            if path.exists() {
-                let cap = FsCapability::new_file(path, AccessMode::ReadWrite)?;
+            if let Some(cap) =
+                try_new_file(path, AccessMode::ReadWrite, "Skipping non-existent file")?
+            {
                 caps.add_fs(cap);
-            } else {
-                warn!("Skipping non-existent file: {}", path.display());
             }
         }
 
         for path in &args.read_file {
-            if path.exists() {
-                let cap = FsCapability::new_file(path, AccessMode::Read)?;
+            if let Some(cap) = try_new_file(path, AccessMode::Read, "Skipping non-existent file")? {
                 caps.add_fs(cap);
-            } else {
-                warn!("Skipping non-existent file: {}", path.display());
             }
         }
 
         for path in &args.write_file {
-            if path.exists() {
-                let cap = FsCapability::new_file(path, AccessMode::Write)?;
+            if let Some(cap) = try_new_file(path, AccessMode::Write, "Skipping non-existent file")?
+            {
                 caps.add_fs(cap);
-            } else {
-                warn!("Skipping non-existent file: {}", path.display());
             }
         }
 
@@ -127,90 +140,54 @@ impl CapabilitySetExt for CapabilitySet {
         // Directories with read+write access
         for path_template in &fs.allow {
             let path = expand_vars(path_template, workdir)?;
-            if path.exists() {
-                let cap = FsCapability::new_dir(&path, AccessMode::ReadWrite)?;
+            let label = format!("Profile path '{}' does not exist, skipping", path_template);
+            if let Some(cap) = try_new_dir(&path, AccessMode::ReadWrite, &label)? {
                 caps.add_fs(cap);
-            } else {
-                warn!(
-                    "Profile path '{}' (expanded to '{}') does not exist, skipping",
-                    path_template,
-                    path.display()
-                );
             }
         }
 
         // Directories with read-only access
         for path_template in &fs.read {
             let path = expand_vars(path_template, workdir)?;
-            if path.exists() {
-                let cap = FsCapability::new_dir(&path, AccessMode::Read)?;
+            let label = format!("Profile path '{}' does not exist, skipping", path_template);
+            if let Some(cap) = try_new_dir(&path, AccessMode::Read, &label)? {
                 caps.add_fs(cap);
-            } else {
-                warn!(
-                    "Profile path '{}' (expanded to '{}') does not exist, skipping",
-                    path_template,
-                    path.display()
-                );
             }
         }
 
         // Directories with write-only access
         for path_template in &fs.write {
             let path = expand_vars(path_template, workdir)?;
-            if path.exists() {
-                let cap = FsCapability::new_dir(&path, AccessMode::Write)?;
+            let label = format!("Profile path '{}' does not exist, skipping", path_template);
+            if let Some(cap) = try_new_dir(&path, AccessMode::Write, &label)? {
                 caps.add_fs(cap);
-            } else {
-                warn!(
-                    "Profile path '{}' (expanded to '{}') does not exist, skipping",
-                    path_template,
-                    path.display()
-                );
             }
         }
 
         // Single files with read+write access
         for path_template in &fs.allow_file {
             let path = expand_vars(path_template, workdir)?;
-            if path.exists() {
-                let cap = FsCapability::new_file(&path, AccessMode::ReadWrite)?;
+            let label = format!("Profile file '{}' does not exist, skipping", path_template);
+            if let Some(cap) = try_new_file(&path, AccessMode::ReadWrite, &label)? {
                 caps.add_fs(cap);
-            } else {
-                warn!(
-                    "Profile file '{}' (expanded to '{}') does not exist, skipping",
-                    path_template,
-                    path.display()
-                );
             }
         }
 
         // Single files with read-only access
         for path_template in &fs.read_file {
             let path = expand_vars(path_template, workdir)?;
-            if path.exists() {
-                let cap = FsCapability::new_file(&path, AccessMode::Read)?;
+            let label = format!("Profile file '{}' does not exist, skipping", path_template);
+            if let Some(cap) = try_new_file(&path, AccessMode::Read, &label)? {
                 caps.add_fs(cap);
-            } else {
-                warn!(
-                    "Profile file '{}' (expanded to '{}') does not exist, skipping",
-                    path_template,
-                    path.display()
-                );
             }
         }
 
         // Single files with write-only access
         for path_template in &fs.write_file {
             let path = expand_vars(path_template, workdir)?;
-            if path.exists() {
-                let cap = FsCapability::new_file(&path, AccessMode::Write)?;
+            let label = format!("Profile file '{}' does not exist, skipping", path_template);
+            if let Some(cap) = try_new_file(&path, AccessMode::Write, &label)? {
                 caps.add_fs(cap);
-            } else {
-                warn!(
-                    "Profile file '{}' (expanded to '{}') does not exist, skipping",
-                    path_template,
-                    path.display()
-                );
             }
         }
 
@@ -245,44 +222,47 @@ impl CapabilitySetExt for CapabilitySet {
 fn add_cli_overrides(caps: &mut CapabilitySet, args: &SandboxArgs) -> Result<()> {
     // Additional directories from CLI
     for path in &args.allow {
-        if path.exists() && !caps.path_covered(path) {
-            let cap = FsCapability::new_dir(path, AccessMode::ReadWrite)?;
-            caps.add_fs(cap);
+        if !caps.path_covered(path) {
+            if let Some(cap) =
+                try_new_dir(path, AccessMode::ReadWrite, "Skipping non-existent path")?
+            {
+                caps.add_fs(cap);
+            }
         }
     }
 
     for path in &args.read {
-        if path.exists() && !caps.path_covered(path) {
-            let cap = FsCapability::new_dir(path, AccessMode::Read)?;
-            caps.add_fs(cap);
+        if !caps.path_covered(path) {
+            if let Some(cap) = try_new_dir(path, AccessMode::Read, "Skipping non-existent path")? {
+                caps.add_fs(cap);
+            }
         }
     }
 
     for path in &args.write {
-        if path.exists() && !caps.path_covered(path) {
-            let cap = FsCapability::new_dir(path, AccessMode::Write)?;
-            caps.add_fs(cap);
+        if !caps.path_covered(path) {
+            if let Some(cap) = try_new_dir(path, AccessMode::Write, "Skipping non-existent path")? {
+                caps.add_fs(cap);
+            }
         }
     }
 
     // Additional files from CLI
     for path in &args.allow_file {
-        if path.exists() {
-            let cap = FsCapability::new_file(path, AccessMode::ReadWrite)?;
+        if let Some(cap) = try_new_file(path, AccessMode::ReadWrite, "Skipping non-existent file")?
+        {
             caps.add_fs(cap);
         }
     }
 
     for path in &args.read_file {
-        if path.exists() {
-            let cap = FsCapability::new_file(path, AccessMode::Read)?;
+        if let Some(cap) = try_new_file(path, AccessMode::Read, "Skipping non-existent file")? {
             caps.add_fs(cap);
         }
     }
 
     for path in &args.write_file {
-        if path.exists() {
-            let cap = FsCapability::new_file(path, AccessMode::Write)?;
+        if let Some(cap) = try_new_file(path, AccessMode::Write, "Skipping non-existent file")? {
             caps.add_fs(cap);
         }
     }
@@ -327,14 +307,14 @@ fn add_system_read_paths(caps: &mut CapabilitySet) -> Result<()> {
 
     for path_str in system_paths {
         let path = expand_tilde(&path_str)?;
-        if path.exists() && !caps.path_covered(&path) {
+        if !caps.path_covered(&path) {
             match FsCapability::new_dir(&path, AccessMode::Read) {
                 Ok(mut cap) => {
                     cap.source = CapabilitySource::System;
                     caps.add_fs(cap);
                 }
                 Err(e) => {
-                    // Non-fatal: some system paths may not be directories
+                    // Non-fatal: path may not exist or may not be a directory
                     tracing::debug!("Could not add system path {}: {}", path_str, e);
                 }
             }
@@ -350,15 +330,13 @@ fn add_system_read_paths(caps: &mut CapabilitySet) -> Result<()> {
         let writable_paths = config::get_system_writable_paths()?;
         for path_str in writable_paths {
             let path = expand_tilde(&path_str)?;
-            if path.exists() {
-                match FsCapability::new_dir(&path, AccessMode::ReadWrite) {
-                    Ok(mut cap) => {
-                        cap.source = CapabilitySource::System;
-                        caps.add_fs(cap);
-                    }
-                    Err(e) => {
-                        tracing::debug!("Could not add writable system path {}: {}", path_str, e);
-                    }
+            match FsCapability::new_dir(&path, AccessMode::ReadWrite) {
+                Ok(mut cap) => {
+                    cap.source = CapabilitySource::System;
+                    caps.add_fs(cap);
+                }
+                Err(e) => {
+                    tracing::debug!("Could not add writable system path {}: {}", path_str, e);
                 }
             }
         }
@@ -367,15 +345,13 @@ fn add_system_read_paths(caps: &mut CapabilitySet) -> Result<()> {
         let tmpdir = config::validated_tmpdir()?;
         {
             let path = std::path::PathBuf::from(&tmpdir);
-            if path.exists() {
-                match FsCapability::new_dir(&path, AccessMode::ReadWrite) {
-                    Ok(mut cap) => {
-                        cap.source = CapabilitySource::System;
-                        caps.add_fs(cap);
-                    }
-                    Err(e) => {
-                        tracing::debug!("Could not add TMPDIR {}: {}", tmpdir, e);
-                    }
+            match FsCapability::new_dir(&path, AccessMode::ReadWrite) {
+                Ok(mut cap) => {
+                    cap.source = CapabilitySource::System;
+                    caps.add_fs(cap);
+                }
+                Err(e) => {
+                    tracing::debug!("Could not add TMPDIR {}: {}", tmpdir, e);
                 }
             }
         }

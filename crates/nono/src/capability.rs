@@ -71,26 +71,29 @@ pub struct FsCapability {
 
 impl FsCapability {
     /// Create a new directory capability, canonicalizing the path
+    ///
+    /// Canonicalizes first, then checks metadata on the resolved path
+    /// to avoid TOCTOU races between exists() and canonicalize().
     pub fn new_dir(path: impl AsRef<Path>, access: AccessMode) -> Result<Self> {
         let path = path.as_ref();
 
-        // Check path exists
-        if !path.exists() {
-            return Err(NonoError::PathNotFound(path.to_path_buf()));
-        }
+        // Canonicalize first - this atomically resolves symlinks and verifies existence.
+        // No separate exists() check needed, eliminating TOCTOU window.
+        let resolved = path.canonicalize().map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                NonoError::PathNotFound(path.to_path_buf())
+            } else {
+                NonoError::PathCanonicalization {
+                    path: path.to_path_buf(),
+                    source: e,
+                }
+            }
+        })?;
 
-        // Verify it's a directory
-        if !path.is_dir() {
+        // Verify type on the already-resolved path (no TOCTOU: same inode)
+        if !resolved.is_dir() {
             return Err(NonoError::ExpectedDirectory(path.to_path_buf()));
         }
-
-        // Canonicalize to absolute path, resolving symlinks
-        let resolved = path
-            .canonicalize()
-            .map_err(|e| NonoError::PathCanonicalization {
-                path: path.to_path_buf(),
-                source: e,
-            })?;
 
         Ok(Self {
             original: path.to_path_buf(),
@@ -102,26 +105,29 @@ impl FsCapability {
     }
 
     /// Create a new single file capability, canonicalizing the path
+    ///
+    /// Canonicalizes first, then checks metadata on the resolved path
+    /// to avoid TOCTOU races between exists() and canonicalize().
     pub fn new_file(path: impl AsRef<Path>, access: AccessMode) -> Result<Self> {
         let path = path.as_ref();
 
-        // Check path exists
-        if !path.exists() {
-            return Err(NonoError::PathNotFound(path.to_path_buf()));
-        }
+        // Canonicalize first - this atomically resolves symlinks and verifies existence.
+        // No separate exists() check needed, eliminating TOCTOU window.
+        let resolved = path.canonicalize().map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                NonoError::PathNotFound(path.to_path_buf())
+            } else {
+                NonoError::PathCanonicalization {
+                    path: path.to_path_buf(),
+                    source: e,
+                }
+            }
+        })?;
 
-        // Verify it's a file
-        if !path.is_file() {
+        // Verify type on the already-resolved path (no TOCTOU: same inode)
+        if !resolved.is_file() {
             return Err(NonoError::ExpectedFile(path.to_path_buf()));
         }
-
-        // Canonicalize to absolute path, resolving symlinks
-        let resolved = path
-            .canonicalize()
-            .map_err(|e| NonoError::PathCanonicalization {
-                path: path.to_path_buf(),
-                source: e,
-            })?;
 
         Ok(Self {
             original: path.to_path_buf(),
@@ -137,6 +143,38 @@ impl std::fmt::Display for FsCapability {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{} ({})", self.resolved.display(), self.access)
     }
+}
+
+/// Validate a platform-specific rule for obvious security issues.
+///
+/// Rejects rules that:
+/// - Don't start with `(` (malformed S-expressions)
+/// - Grant root-level filesystem access `(allow file-read* (subpath "/"))`
+/// - Grant root-level write access `(allow file-write* (subpath "/"))`
+fn validate_platform_rule(rule: &str) -> Result<()> {
+    let trimmed = rule.trim();
+
+    if !trimmed.starts_with('(') {
+        return Err(NonoError::SandboxInit(format!(
+            "platform rule must be an S-expression starting with '(': {}",
+            rule
+        )));
+    }
+
+    // Reject rules that grant root-level filesystem access
+    let normalized = trimmed.replace(' ', "");
+    if normalized.contains("(allowfile-read*(subpath\"/\"))") {
+        return Err(NonoError::SandboxInit(
+            "platform rule must not grant root-level read access".to_string(),
+        ));
+    }
+    if normalized.contains("(allowfile-write*(subpath\"/\"))") {
+        return Err(NonoError::SandboxInit(
+            "platform rule must not grant root-level write access".to_string(),
+        ));
+    }
+
+    Ok(())
 }
 
 /// The complete set of capabilities granted to the sandbox
@@ -227,10 +265,13 @@ impl CapabilitySet {
     ///
     /// On macOS, these are Seatbelt S-expression strings injected verbatim
     /// into the generated profile. Ignored on Linux.
-    #[must_use]
-    pub fn platform_rule(mut self, rule: impl Into<String>) -> Self {
-        self.platform_rules.push(rule.into());
-        self
+    ///
+    /// Returns an error if the rule is malformed or grants root-level access.
+    pub fn platform_rule(mut self, rule: impl Into<String>) -> Result<Self> {
+        let rule = rule.into();
+        validate_platform_rule(&rule)?;
+        self.platform_rules.push(rule);
+        Ok(self)
     }
 
     // Mutable methods (for advanced/programmatic use)
@@ -256,8 +297,13 @@ impl CapabilitySet {
     }
 
     /// Add a raw platform-specific rule
-    pub fn add_platform_rule(&mut self, rule: impl Into<String>) {
-        self.platform_rules.push(rule.into());
+    ///
+    /// Returns an error if the rule is malformed or grants root-level access.
+    pub fn add_platform_rule(&mut self, rule: impl Into<String>) -> Result<()> {
+        let rule = rule.into();
+        validate_platform_rule(&rule)?;
+        self.platform_rules.push(rule);
+        Ok(())
     }
 
     // Accessors
@@ -477,5 +523,36 @@ mod tests {
         let cap = FsCapability::new_dir(&symlink, AccessMode::Read).unwrap();
         // Symlink should be resolved to real path
         assert_eq!(cap.resolved, real_dir.canonicalize().unwrap());
+    }
+
+    #[test]
+    fn test_platform_rule_validation_valid_deny() {
+        let mut caps = CapabilitySet::new();
+        assert!(caps.add_platform_rule("(deny file-write-unlink)").is_ok());
+        assert!(caps
+            .add_platform_rule("(deny file-read-data (subpath \"/secret\"))")
+            .is_ok());
+    }
+
+    #[test]
+    fn test_platform_rule_validation_rejects_malformed() {
+        let mut caps = CapabilitySet::new();
+        assert!(caps.add_platform_rule("not an s-expression").is_err());
+        assert!(caps.add_platform_rule("").is_err());
+    }
+
+    #[test]
+    fn test_platform_rule_validation_rejects_root_access() {
+        let mut caps = CapabilitySet::new();
+        assert!(caps
+            .add_platform_rule("(allow file-read* (subpath \"/\"))")
+            .is_err());
+        assert!(caps
+            .add_platform_rule("(allow file-write* (subpath \"/\"))")
+            .is_err());
+        // Specific subpaths should be fine
+        assert!(caps
+            .add_platform_rule("(allow file-read* (subpath \"/usr\"))")
+            .is_ok());
     }
 }

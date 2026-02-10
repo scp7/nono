@@ -6,7 +6,7 @@
 #   make check        Run clippy and format check
 #   make release      Build release binaries
 
-.PHONY: all build build-lib build-cli test test-lib test-cli check clippy fmt clean install help
+.PHONY: all build build-lib build-cli build-ffi test test-lib test-cli test-ffi check clippy fmt clean install help
 
 # Default target
 all: build
@@ -20,6 +20,9 @@ build-lib:
 build-cli:
 	cargo build -p nono-cli
 
+build-ffi:
+	cargo build -p nono-ffi
+
 build-release:
 	cargo build --release
 
@@ -30,13 +33,16 @@ build-release-cli:
 	cargo build --release -p nono-cli
 
 # Test targets
-test: test-lib test-cli
+test: test-lib test-cli test-ffi
 
 test-lib:
 	cargo test -p nono
 
 test-cli:
 	cargo test -p nono-cli
+
+test-ffi:
+	cargo test -p nono-ffi
 
 test-doc:
 	cargo test --doc
@@ -100,12 +106,14 @@ help:
 	@echo "  make build          Build library and CLI (debug)"
 	@echo "  make build-lib      Build library only"
 	@echo "  make build-cli      Build CLI only"
+	@echo "  make build-ffi      Build C FFI bindings"
 	@echo "  make build-release  Build release binaries"
 	@echo ""
 	@echo "Test:"
 	@echo "  make test           Run all tests"
 	@echo "  make test-lib       Run library tests only"
 	@echo "  make test-cli       Run CLI tests only"
+	@echo "  make test-ffi       Run C FFI tests only"
 	@echo "  make test-doc       Run doc tests only"
 	@echo ""
 	@echo "Check:"

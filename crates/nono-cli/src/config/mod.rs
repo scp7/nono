@@ -191,16 +191,20 @@ pub fn load_effective_config() -> Result<EffectiveConfig> {
 }
 
 /// Check if a path is in the sensitive paths list
+///
+/// Uses `Path::starts_with()` for component-wise comparison, preventing
+/// bypass attacks like `/homeevil` matching `/home`.
 #[allow(dead_code)]
 pub fn is_sensitive_path(path: &str, config: &EffectiveConfig) -> Result<bool> {
     let home = validated_home()?;
     let expanded = path.replace('~', &home);
+    let expanded_path = Path::new(&expanded);
 
     for sensitive in &config.sensitive_paths {
         let expanded_sensitive = sensitive.replace('~', &home);
-        if expanded == expanded_sensitive
-            || expanded.starts_with(&format!("{}/", expanded_sensitive))
-        {
+        let sensitive_path = Path::new(&expanded_sensitive);
+
+        if expanded_path == sensitive_path || expanded_path.starts_with(sensitive_path) {
             // Check if explicitly allowed
             if config.allowed_sensitive.contains_key(sensitive) {
                 return Ok(false);
@@ -312,6 +316,9 @@ pub fn check_blocked_command(
 
 /// Check if a path is in the sensitive paths list (for `nono why` command)
 /// Returns Some(reason) if blocked, None if not in list
+///
+/// Uses `Path::starts_with()` for component-wise comparison, preventing
+/// bypass attacks like `~/.sshevil` matching `~/.ssh`.
 pub fn check_sensitive_path(path_str: &str) -> Result<Option<&'static str>> {
     use security_lists::sensitive_paths_by_category;
 
@@ -323,6 +330,7 @@ pub fn check_sensitive_path(path_str: &str) -> Result<Option<&'static str>> {
     } else {
         path_str.to_string()
     };
+    let expanded_path = Path::new(&expanded);
 
     let lists = embedded::load_security_lists()?;
     let categories = sensitive_paths_by_category(&lists);
@@ -330,10 +338,9 @@ pub fn check_sensitive_path(path_str: &str) -> Result<Option<&'static str>> {
     for (category_name, paths) in categories {
         for sensitive in paths {
             let expanded_sensitive = sensitive.replace('~', &home);
+            let sensitive_path = Path::new(&expanded_sensitive);
 
-            if expanded == expanded_sensitive
-                || expanded.starts_with(&format!("{}/", expanded_sensitive))
-            {
+            if expanded_path == sensitive_path || expanded_path.starts_with(sensitive_path) {
                 return Ok(Some(category_name));
             }
         }
@@ -365,6 +372,22 @@ mod tests {
         assert!(is_dangerous_command("dd", &config));
         assert!(!is_dangerous_command("ls", &config));
         assert!(!is_dangerous_command("echo", &config));
+    }
+
+    #[test]
+    fn test_is_sensitive_path_component_wise() {
+        let mut config = EffectiveConfig::default();
+        config.sensitive_paths.insert("/home/user/.ssh".to_string());
+
+        // Exact match
+        assert!(is_sensitive_path("/home/user/.ssh", &config).unwrap_or(false));
+        // Child path
+        assert!(is_sensitive_path("/home/user/.ssh/id_rsa", &config).unwrap_or(false));
+        // Path collision must NOT match (the fix for C1)
+        assert!(!is_sensitive_path("/home/user/.sshevil", &config).unwrap_or(false));
+        assert!(!is_sensitive_path("/home/user/.ssh_backup", &config).unwrap_or(false));
+        // Unrelated path
+        assert!(!is_sensitive_path("/home/user/projects", &config).unwrap_or(false));
     }
 
     #[test]

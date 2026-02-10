@@ -76,15 +76,16 @@ fn collect_parent_dirs(caps: &CapabilitySet) -> std::collections::HashSet<String
 /// Escape a path for use in Seatbelt profile strings.
 ///
 /// Paths are placed inside double-quoted S-expression strings where `\` and `"`
-/// are the significant characters. Control characters are stripped since they
-/// cannot appear in valid filesystem paths and could disrupt profile parsing.
+/// are the significant characters. All control characters (0x00-0x1F, 0x7F, and
+/// Unicode control chars) are stripped since they cannot appear in valid filesystem
+/// paths and could disrupt Seatbelt's S-expression parser.
 fn escape_path(path: &str) -> String {
     let mut result = String::with_capacity(path.len());
     for c in path.chars() {
         match c {
             '\\' => result.push_str("\\\\"),
             '"' => result.push_str("\\\""),
-            '\n' | '\r' | '\0' => {}
+            c if c.is_control() => {}
             _ => result.push(c),
         }
     }
@@ -95,7 +96,10 @@ fn escape_path(path: &str) -> String {
 ///
 /// This is a pure primitive - it generates rules ONLY for paths in the CapabilitySet.
 /// The caller must include all necessary paths (system paths, temp dirs, etc.).
-fn generate_profile(caps: &CapabilitySet) -> String {
+///
+/// Returns an error if any path contains non-UTF-8 bytes (which would produce
+/// incorrect Seatbelt rules via lossy conversion).
+fn generate_profile(caps: &CapabilitySet) -> Result<String> {
     let mut profile = String::new();
 
     // Profile version
@@ -114,8 +118,18 @@ fn generate_profile(caps: &CapabilitySet) -> String {
 
     // Allow specific system operations
     profile.push_str("(allow sysctl-read)\n");
-    profile.push_str("(allow mach*)\n");
-    profile.push_str("(allow ipc*)\n");
+
+    // Mach IPC: allow only service resolution and identity, deny privileged ops
+    profile.push_str("(allow mach-lookup)\n");
+    profile.push_str("(allow mach-per-user-lookup)\n");
+    profile.push_str("(allow mach-task-name)\n");
+    profile.push_str("(deny mach-priv*)\n");
+
+    // IPC: allow only POSIX shared memory operations
+    profile.push_str("(allow ipc-posix-shm-read-data)\n");
+    profile.push_str("(allow ipc-posix-shm-write-data)\n");
+    profile.push_str("(allow ipc-posix-shm-write-create)\n");
+
     profile.push_str("(allow signal)\n");
     profile.push_str("(allow system-socket)\n");
     profile.push_str("(allow system-fsctl)\n");
@@ -139,7 +153,12 @@ fn generate_profile(caps: &CapabilitySet) -> String {
     // from paths outside the sandbox's read set.
     for cap in caps.fs_capabilities() {
         if matches!(cap.access, AccessMode::Read | AccessMode::ReadWrite) {
-            let escaped_path = escape_path(&cap.resolved.display().to_string());
+            let escaped_path = escape_path(cap.resolved.to_str().ok_or_else(|| {
+                NonoError::SandboxInit(format!(
+                    "path contains non-UTF-8 bytes: {}",
+                    cap.resolved.display()
+                ))
+            })?);
             let path_filter = if cap.is_file {
                 format!("literal \"{}\"", escaped_path)
             } else {
@@ -149,15 +168,34 @@ fn generate_profile(caps: &CapabilitySet) -> String {
         }
     }
 
-    // Allow file ioctl for TTY
-    profile.push_str("(allow file-ioctl)\n");
+    // Allow file ioctl restricted to TTY/PTY devices and granted paths
+    profile.push_str("(allow file-ioctl (literal \"/dev/tty\"))\n");
+    profile.push_str("(allow file-ioctl (regex #\"^/dev/ttys[0-9]+$\"))\n");
+    profile.push_str("(allow file-ioctl (regex #\"^/dev/pty[a-z][0-9a-f]+$\"))\n");
+    // Also allow ioctl on explicitly granted paths (for interactive programs)
+    for cap in caps.fs_capabilities() {
+        if let Some(path_str) = cap.resolved.to_str() {
+            let escaped_path = escape_path(path_str);
+            let path_filter = if cap.is_file {
+                format!("literal \"{}\"", escaped_path)
+            } else {
+                format!("subpath \"{}\"", escaped_path)
+            };
+            profile.push_str(&format!("(allow file-ioctl ({}))\n", path_filter));
+        }
+    }
 
     // Allow pseudo-terminal operations
     profile.push_str("(allow pseudo-tty)\n");
 
     // Add read rules for all capabilities with Read or ReadWrite access
     for cap in caps.fs_capabilities() {
-        let escaped_path = escape_path(&cap.resolved.display().to_string());
+        let escaped_path = escape_path(cap.resolved.to_str().ok_or_else(|| {
+            NonoError::SandboxInit(format!(
+                "path contains non-UTF-8 bytes: {}",
+                cap.resolved.display()
+            ))
+        })?);
 
         let path_filter = if cap.is_file {
             format!("literal \"{}\"", escaped_path)
@@ -175,9 +213,27 @@ fn generate_profile(caps: &CapabilitySet) -> String {
         }
     }
 
+    // SECURITY: Platform deny rules are placed BETWEEN read and write rules.
+    // This matches the research CLI pattern where sensitive path denials come
+    // after read allows but before write allows. In Seatbelt, more specific rules
+    // always win regardless of order; for equal specificity, last-match wins.
+    // Placing deny rules here ensures they override read allows when equally specific,
+    // while write allows below can still override deny-unlink for user-granted paths.
+    for rule in caps.platform_rules() {
+        profile.push_str(rule);
+        profile.push('\n');
+    }
+
     // Add write rules for all capabilities with Write or ReadWrite access
+    // These come AFTER platform deny rules so user-granted write paths can
+    // override global denials like (deny file-write-unlink)
     for cap in caps.fs_capabilities() {
-        let escaped_path = escape_path(&cap.resolved.display().to_string());
+        let escaped_path = escape_path(cap.resolved.to_str().ok_or_else(|| {
+            NonoError::SandboxInit(format!(
+                "path contains non-UTF-8 bytes: {}",
+                cap.resolved.display()
+            ))
+        })?);
 
         let path_filter = if cap.is_file {
             format!("literal \"{}\"", escaped_path)
@@ -195,12 +251,6 @@ fn generate_profile(caps: &CapabilitySet) -> String {
         }
     }
 
-    // Platform-specific rules injected verbatim by the caller (e.g., deny rules from groups)
-    for rule in caps.platform_rules() {
-        profile.push_str(rule);
-        profile.push('\n');
-    }
-
     // Network rules
     if caps.is_network_blocked() {
         profile.push_str("(deny network*)\n");
@@ -210,7 +260,7 @@ fn generate_profile(caps: &CapabilitySet) -> String {
         profile.push_str("(allow network-bind)\n");
     }
 
-    profile
+    Ok(profile)
 }
 
 /// Apply Seatbelt sandbox with the given capabilities
@@ -218,7 +268,7 @@ fn generate_profile(caps: &CapabilitySet) -> String {
 /// This is a pure primitive - it applies ONLY the capabilities provided.
 /// The caller is responsible for including all necessary paths.
 pub fn apply(caps: &CapabilitySet) -> Result<()> {
-    let profile = generate_profile(caps);
+    let profile = generate_profile(caps)?;
 
     debug!("Generated Seatbelt profile:\n{}", profile);
 
@@ -270,7 +320,7 @@ mod tests {
     #[test]
     fn test_generate_profile_empty() {
         let caps = CapabilitySet::default();
-        let profile = generate_profile(&caps);
+        let profile = generate_profile(&caps).unwrap();
 
         assert!(profile.contains("(version 1)"));
         assert!(profile.contains("(deny default)"));
@@ -289,7 +339,7 @@ mod tests {
             source: CapabilitySource::User,
         });
 
-        let profile = generate_profile(&caps);
+        let profile = generate_profile(&caps).unwrap();
 
         assert!(profile.contains("(allow file-read* (subpath \"/test\"))"));
         assert!(profile.contains("(allow file-write* (subpath \"/test\"))"));
@@ -307,7 +357,7 @@ mod tests {
             source: CapabilitySource::User,
         });
 
-        let profile = generate_profile(&caps);
+        let profile = generate_profile(&caps).unwrap();
 
         assert!(profile.contains("file-write*"));
         assert!(profile.contains("literal \"/test.txt\""));
@@ -318,7 +368,7 @@ mod tests {
     #[test]
     fn test_generate_profile_no_global_file_map_executable() {
         let caps = CapabilitySet::default();
-        let profile = generate_profile(&caps);
+        let profile = generate_profile(&caps).unwrap();
 
         // Must not contain a global (unrestricted) file-map-executable
         assert!(!profile.contains("(allow file-map-executable)\n"));
@@ -328,7 +378,7 @@ mod tests {
     fn test_generate_profile_network_blocked() {
         let caps = CapabilitySet::new().block_network();
 
-        let profile = generate_profile(&caps);
+        let profile = generate_profile(&caps).unwrap();
 
         assert!(profile.contains("(deny network*)"));
         assert!(!profile.contains("(allow network-outbound)"));
@@ -367,19 +417,25 @@ mod tests {
         assert_eq!(escape_path("/path\nwith\nnewlines"), "/pathwithnewlines");
         assert_eq!(escape_path("/path\rwith\rreturns"), "/pathwithreturns");
         assert_eq!(escape_path("/path\0with\0nulls"), "/pathwithnulls");
+        // All control characters must be stripped
+        assert_eq!(escape_path("/path\twith\ttabs"), "/pathwithtabs");
+        assert_eq!(escape_path("/path\x0bwith\x0cfeeds"), "/pathwithfeeds");
+        assert_eq!(escape_path("/path\x1bwith\x1bescape"), "/pathwithescape");
+        assert_eq!(escape_path("/path\x7fwith\x7fdel"), "/pathwithdel");
     }
 
     #[test]
     fn test_generate_profile_with_platform_rules() {
         let mut caps = CapabilitySet::new();
-        caps.add_platform_rule("(deny file-read-data (subpath \"/private/var/db\"))");
-        caps.add_platform_rule("(deny file-write-unlink)");
+        caps.add_platform_rule("(deny file-read-data (subpath \"/private/var/db\"))")
+            .unwrap();
+        caps.add_platform_rule("(deny file-write-unlink)").unwrap();
 
-        let profile = generate_profile(&caps);
+        let profile = generate_profile(&caps).unwrap();
 
         assert!(profile.contains("(deny file-read-data (subpath \"/private/var/db\"))"));
         assert!(profile.contains("(deny file-write-unlink)"));
-        // Platform rules should appear before network rules
+        // Platform deny rules should appear before network rules
         let platform_pos = profile
             .find("(deny file-write-unlink)")
             .expect("platform rule not found");
@@ -393,9 +449,44 @@ mod tests {
     }
 
     #[test]
+    fn test_generate_profile_platform_rules_between_reads_and_writes() {
+        let mut caps = CapabilitySet::new();
+        caps.add_fs(FsCapability {
+            original: PathBuf::from("/test"),
+            resolved: PathBuf::from("/test"),
+            access: AccessMode::ReadWrite,
+            is_file: false,
+            source: CapabilitySource::User,
+        });
+        caps.add_platform_rule("(deny file-write-unlink)").unwrap();
+
+        let profile = generate_profile(&caps).unwrap();
+
+        let read_pos = profile
+            .find("(allow file-read* (subpath \"/test\"))")
+            .expect("read rule not found");
+        let deny_pos = profile
+            .find("(deny file-write-unlink)")
+            .expect("deny rule not found");
+        let write_pos = profile
+            .find("(allow file-write* (subpath \"/test\"))")
+            .expect("write rule not found");
+
+        // Order: read rules -> platform deny rules -> write rules
+        assert!(
+            read_pos < deny_pos,
+            "read rules must come before platform deny rules"
+        );
+        assert!(
+            deny_pos < write_pos,
+            "platform deny rules must come before write rules"
+        );
+    }
+
+    #[test]
     fn test_generate_profile_platform_rules_empty() {
         let caps = CapabilitySet::new();
-        let profile = generate_profile(&caps);
+        let profile = generate_profile(&caps).unwrap();
 
         // Should still generate a valid profile without platform rules
         assert!(profile.contains("(version 1)"));
@@ -449,7 +540,7 @@ mod tests {
             source: CapabilitySource::User,
         });
 
-        let profile = generate_profile(&caps);
+        let profile = generate_profile(&caps).unwrap();
 
         // The profile must NOT contain the injected rule as a standalone line
         for line in profile.lines() {
@@ -476,7 +567,7 @@ mod tests {
         });
 
         // Group-sourced capabilities should generate the same profile rules
-        let profile = generate_profile(&caps);
+        let profile = generate_profile(&caps).unwrap();
         assert!(profile.contains("(allow file-read* (subpath \"/usr\"))"));
     }
 }

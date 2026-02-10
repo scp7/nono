@@ -369,11 +369,17 @@ fn unescape_strace_string(s: &str) -> String {
                     // Octal escape \NNN (1-3 digits, including \0 for null)
                     let mut octal = String::new();
                     while octal.len() < 3 && chars.peek().is_some_and(|c| ('0'..='7').contains(c)) {
-                        octal.push(chars.next().expect("char exists"));
+                        if let Some(c) = chars.next() {
+                            octal.push(c);
+                        }
                     }
-                    // from_str_radix is safe here since we validated digits are 0-7
-                    let val = u8::from_str_radix(&octal, 8).expect("valid octal");
-                    result.push(val as char);
+                    if let Ok(val) = u8::from_str_radix(&octal, 8) {
+                        result.push(val as char);
+                    } else {
+                        // Malformed octal - pass through literally
+                        result.push('\\');
+                        result.push_str(&octal);
+                    }
                 }
                 Some('x') => {
                     chars.next(); // consume 'x'
@@ -381,15 +387,22 @@ fn unescape_strace_string(s: &str) -> String {
                     let mut hex = String::new();
                     for _ in 0..2 {
                         if chars.peek().is_some_and(|c| c.is_ascii_hexdigit()) {
-                            hex.push(chars.next().expect("char exists"));
+                            if let Some(c) = chars.next() {
+                                hex.push(c);
+                            }
                         } else {
                             break;
                         }
                     }
                     if hex.len() == 2 {
-                        // from_str_radix is safe here since we validated hex digits
-                        let val = u8::from_str_radix(&hex, 16).expect("valid hex");
-                        result.push(val as char);
+                        if let Ok(val) = u8::from_str_radix(&hex, 16) {
+                            result.push(val as char);
+                        } else {
+                            // Malformed hex - pass through literally
+                            result.push('\\');
+                            result.push('x');
+                            result.push_str(&hex);
+                        }
                     } else {
                         // Invalid/incomplete hex escape - pass through literally
                         result.push('\\');

@@ -127,10 +127,10 @@ fn run_why(args: WhyArgs) -> Result<()> {
                     message: "Not running inside a nono sandbox".to_string(),
                 };
                 if args.json {
-                    println!(
-                        "{}",
-                        serde_json::to_string_pretty(&result).unwrap_or_default()
-                    );
+                    let json = serde_json::to_string_pretty(&result).map_err(|e| {
+                        NonoError::ConfigParse(format!("JSON serialization failed: {}", e))
+                    })?;
+                    println!("{}", json);
                 } else {
                     print_result(&result);
                 }
@@ -212,10 +212,9 @@ fn run_why(args: WhyArgs) -> Result<()> {
 
     // Output result
     if args.json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&result).unwrap_or_default()
-        );
+        let json = serde_json::to_string_pretty(&result)
+            .map_err(|e| NonoError::ConfigParse(format!("JSON serialization failed: {}", e)))?;
+        println!("{}", json);
     } else {
         print_result(&result);
     }
@@ -389,6 +388,10 @@ fn execute_sandboxed(
         }
         exec_strategy::ExecStrategy::Monitor => {
             let exit_code = exec_strategy::execute_monitor(&config)?;
+            // Clean up capability state file after child exits
+            if cap_file_path.exists() {
+                let _ = std::fs::remove_file(&cap_file_path);
+            }
             std::process::exit(exit_code);
         }
         exec_strategy::ExecStrategy::Supervised => Err(NonoError::SandboxInit(
@@ -406,13 +409,21 @@ struct PreparedSandbox {
 }
 
 fn prepare_sandbox(args: &SandboxArgs, silent: bool) -> Result<PreparedSandbox> {
-    // Set log level based on verbosity
+    // Reinitialize tracing with verbose level if requested.
+    // Uses tracing_subscriber directly instead of mutating process env vars
+    // (std::env::set_var is unsound in multi-threaded context).
     if args.verbose > 0 {
-        match args.verbose {
-            1 => std::env::set_var("RUST_LOG", "info"),
-            2 => std::env::set_var("RUST_LOG", "debug"),
-            _ => std::env::set_var("RUST_LOG", "trace"),
-        }
+        let filter = match args.verbose {
+            1 => "info",
+            2 => "debug",
+            _ => "trace",
+        };
+        let _ = tracing::subscriber::set_global_default(
+            tracing_subscriber::fmt()
+                .with_env_filter(EnvFilter::new(filter))
+                .with_target(false)
+                .finish(),
+        );
     }
 
     // Clean up stale state files from previous nono runs

@@ -5,6 +5,7 @@ members = [
     "crates/nono-cli",
     "bindings/python",
     "bindings/node",
+    "bindings/c",
 ]
 
 [workspace.package]
@@ -41,6 +42,9 @@ pyo3 = { version = "0.24", features = ["abi3-py39"] }
 napi = { version = "3", default-features = false, features = ["napi9"] }
 napi-derive = "3"
 napi-build = "2"
+
+# C FFI bindings
+cbindgen = "0.27"
 
 [profile.release]
 opt-level = 3

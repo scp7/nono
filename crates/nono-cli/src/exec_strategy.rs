@@ -49,23 +49,41 @@ const MAX_KEYRING_THREADS: usize = 4;
 /// Returns true if an environment variable is unsafe to inherit into a sandboxed child.
 ///
 /// Covers linker injection (LD_PRELOAD, DYLD_INSERT_LIBRARIES), shell startup
-/// injection (BASH_ENV, PROMPT_COMMAND), and interpreter code injection
-/// (NODE_OPTIONS, PERL5OPT, RUBYOPT, PYTHONSTARTUP).
+/// injection (BASH_ENV, PROMPT_COMMAND, IFS), and interpreter code/module injection
+/// (NODE_OPTIONS, PYTHONPATH, PERL5OPT, RUBYOPT, JAVA_TOOL_OPTIONS, etc.).
 fn is_dangerous_env_var(key: &str) -> bool {
+    // Linker injection
     key.starts_with("LD_")
         || key.starts_with("DYLD_")
+        // Shell injection
         || key == "BASH_ENV"
         || key == "ENV"
         || key == "CDPATH"
         || key == "GLOBIGNORE"
         || key.starts_with("BASH_FUNC_")
         || key == "PROMPT_COMMAND"
+        || key == "IFS"
+        // Python injection
         || key == "PYTHONSTARTUP"
+        || key == "PYTHONPATH"
+        // Node.js injection
         || key == "NODE_OPTIONS"
+        || key == "NODE_PATH"
+        // Perl injection
         || key == "PERL5OPT"
         || key == "PERL5LIB"
+        // Ruby injection
         || key == "RUBYOPT"
         || key == "RUBYLIB"
+        || key == "GEM_PATH"
+        || key == "GEM_HOME"
+        // JVM injection
+        || key == "JAVA_TOOL_OPTIONS"
+        || key == "_JAVA_OPTIONS"
+        // .NET injection
+        || key == "DOTNET_STARTUP_HOOKS"
+        // Go injection
+        || key == "GOFLAGS"
 }
 
 /// Threading context for fork safety validation.
@@ -820,11 +838,28 @@ mod tests {
     #[test]
     fn test_dangerous_env_vars_interpreter_injection() {
         assert!(is_dangerous_env_var("PYTHONSTARTUP"));
+        assert!(is_dangerous_env_var("PYTHONPATH"));
         assert!(is_dangerous_env_var("NODE_OPTIONS"));
+        assert!(is_dangerous_env_var("NODE_PATH"));
         assert!(is_dangerous_env_var("PERL5OPT"));
         assert!(is_dangerous_env_var("PERL5LIB"));
         assert!(is_dangerous_env_var("RUBYOPT"));
         assert!(is_dangerous_env_var("RUBYLIB"));
+        assert!(is_dangerous_env_var("GEM_PATH"));
+        assert!(is_dangerous_env_var("GEM_HOME"));
+    }
+
+    #[test]
+    fn test_dangerous_env_vars_jvm_dotnet_go() {
+        assert!(is_dangerous_env_var("JAVA_TOOL_OPTIONS"));
+        assert!(is_dangerous_env_var("_JAVA_OPTIONS"));
+        assert!(is_dangerous_env_var("DOTNET_STARTUP_HOOKS"));
+        assert!(is_dangerous_env_var("GOFLAGS"));
+    }
+
+    #[test]
+    fn test_dangerous_env_vars_shell_ifs() {
+        assert!(is_dangerous_env_var("IFS"));
     }
 
     #[test]
