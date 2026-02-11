@@ -203,26 +203,6 @@ $ nono run --allow ./project --allow-command rm -- rm /etc/hosts
 rm: /etc/hosts: Operation not permitted
 ```
 
-## How It Works
-
-```
-┌─────────────────────────────────────────────────┐
-│  Terminal                                       │
-│                                                 │
-│  $ nono run --allow ./project -- agent          │
-│                                                 │
-│  ┌───────────────────────────────────────────┐  │
-│  │  nono (applies sandbox, then exec)        │  │
-│  │                                           │  │
-│  │  ┌─────────────────────────────────────┐  │  │
-│  │  │  Agent (sandboxed)            │  │  │
-│  │  │  - Can read/write ./project         │  │  │
-│  │  │  - Cannot access ~/.ssh, ~/.aws...  │  │  │
-│  │  │  - Network: allowed (or blocked)    │  │  │
-│  │  └─────────────────────────────────────┘  │  │
-│  └───────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────┘
-```
 
 ## Platform Support
 
