@@ -5,6 +5,7 @@ use landlock::{
     Access, AccessFs, AccessNet, BitFlags, PathBeneath, PathFd, Ruleset, RulesetAttr,
     RulesetCreatedAttr, ABI,
 };
+use std::fs;
 use std::path::Path;
 use tracing::{debug, info, warn};
 
@@ -119,6 +120,17 @@ pub fn apply(caps: &CapabilitySet) -> Result<()> {
         if !path.exists() {
             debug!("Skipping system path {} (does not exist)", path_str);
             continue;
+        }
+
+        // Some distro device aliases (notably /dev/stdin|stdout|stderr) are symlinks
+        // to ephemeral procfs FDs (e.g. /proc/self/fd/1), which can fail Landlock
+        // rule insertion with EBADFD on some kernels. Skip symlink aliases and rely
+        // on stable paths like /dev/fd and /dev/pts already in the system path list.
+        if let Ok(meta) = fs::symlink_metadata(path) {
+            if meta.file_type().is_symlink() {
+                warn!("Skipping system path {} (symlink alias)", path_str);
+                continue;
+            }
         }
 
         let path_fd = match PathFd::new(path) {
