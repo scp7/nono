@@ -51,7 +51,13 @@ fn run() -> Result<()> {
         Commands::Run(args) => {
             // Print banner for run command (unless silent)
             output::print_banner(cli.silent);
-            run_sandbox(args.sandbox, args.command, cli.silent)
+            run_sandbox(
+                args.sandbox,
+                args.command,
+                args.direct_exec,
+                args.no_diagnostics,
+                cli.silent,
+            )
         }
         Commands::Shell(args) => {
             // Print banner for shell command (unless silent)
@@ -234,7 +240,13 @@ fn run_why(args: WhyArgs) -> Result<()> {
 }
 
 /// Run a command inside the sandbox
-fn run_sandbox(args: SandboxArgs, command: Vec<String>, silent: bool) -> Result<()> {
+fn run_sandbox(
+    args: SandboxArgs,
+    command: Vec<String>,
+    direct_exec: bool,
+    no_diagnostics: bool,
+    silent: bool,
+) -> Result<()> {
     // Check if we have a command to run
     if command.is_empty() {
         return Err(NonoError::NoCommand);
@@ -262,13 +274,15 @@ fn run_sandbox(args: SandboxArgs, command: Vec<String>, silent: bool) -> Result<
     }
 
     let prepared = prepare_sandbox(&args, silent)?;
+    // --exec flag forces Direct mode (TTY preservation), overriding profile
+    let interactive = direct_exec || prepared.interactive;
     execute_sandboxed(
         program,
         cmd_args,
         &prepared.caps,
         prepared.secrets,
-        prepared.interactive,
-        silent,
+        interactive,
+        silent || no_diagnostics,
     )
 }
 
