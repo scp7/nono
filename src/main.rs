@@ -282,7 +282,8 @@ fn run_sandbox(
         &prepared.caps,
         prepared.secrets,
         interactive,
-        silent || no_diagnostics,
+        silent,
+        no_diagnostics,
     )
 }
 
@@ -329,6 +330,7 @@ fn run_shell(args: ShellArgs, silent: bool) -> Result<()> {
         prepared.secrets,
         true, // Force interactive for shell
         silent,
+        false, // Shell doesn't support --no-diagnostics
     )
 }
 
@@ -339,6 +341,7 @@ fn execute_sandboxed(
     loaded_secrets: Vec<keystore::LoadedSecret>,
     interactive: bool,
     silent: bool,
+    no_diagnostics: bool,
 ) -> Result<()> {
     // Check if command is blocked using config module
     if let Some(blocked) =
@@ -413,7 +416,7 @@ fn execute_sandboxed(
         caps,
         env_vars,
         cap_file: &cap_file_path,
-        no_diagnostics: silent,
+        no_diagnostics: silent || no_diagnostics,
         threading,
     };
 
