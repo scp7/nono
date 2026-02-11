@@ -263,6 +263,10 @@ nono follows a capability-based security model with defense-in-depth:
 6. **Key isolation** - Secrets are injected securely and cannot be accessed outside the sandbox
 
 
+## Security
+
+If you discover a security vulnerability, please **do not open a public issue**. Public disclosure of vulnerabilities can put all users at risk. Instead, please follow the responsible disclosure process outlined in our [Security Policy](https://github.com/lukehinds/nono/blob/main/SECURITY.md).
+
 ## License
 
 Apache-2.0
