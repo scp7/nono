@@ -44,10 +44,10 @@ footer = """
     {% if release.version -%}
         {% if release.previous.version -%}
             [{{ release.version | trim_start_matches(pat="v") }}]: \
-                https://github.com/lukehinds/nono/compare/{{ release.previous.version }}...{{ release.version }}
+                https://github.com/always-further/nono/compare/{{ release.previous.version }}...{{ release.version }}
         {% endif -%}
     {% else -%}
-        [Unreleased]: https://github.com/lukehinds/nono/compare/{{ release.previous.version }}...HEAD
+        [Unreleased]: https://github.com/always-further/nono/compare/{{ release.previous.version }}...HEAD
     {% endif -%}
 {% endfor %}
 """

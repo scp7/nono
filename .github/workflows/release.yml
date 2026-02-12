@@ -130,7 +130,7 @@ jobs:
       - name: Checkout homebrew-nono
         uses: actions/checkout@v6
         with:
-          repository: lukehinds/homebrew-nono
+          repository: always-further/homebrew-nono
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           path: homebrew-nono
 

@@ -52,7 +52,7 @@ This will:
    - Build binaries (Linux x64, macOS Intel, macOS ARM)
    - Create draft GitHub release with checksums
    - Publish to crates.io (`nono-rs`)
-   - Update Homebrew formula (`lukehinds/nono`)
+   - Update Homebrew formula (`always-further/nono`)
 
 8. **Publish the release** - Go to GitHub releases and publish the draft
 
@@ -61,7 +61,7 @@ This will:
 | Channel | Name | Install Command |
 |---------|------|-----------------|
 | crates.io | `nono-rs` | `cargo install nono-rs` |
-| Homebrew | `lukehinds/nono` | `brew tap lukehinds/nono && brew install nono` |
+| Homebrew | `always-further/nono` | `brew tap always-further/nono && brew install nono` |
 | GitHub Releases | - | Download binary from releases page |
 
 ## Changelog Generation

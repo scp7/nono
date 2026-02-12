@@ -1,8 +1,8 @@
 site_name: nono
 site_description: Capability-based shell for untrusted AI agents
-site_url: https://lukehinds.github.io/nono
-repo_url: https://github.com/lukehinds/nono
-repo_name: lukehinds/nono
+site_url: https://always-further.github.io/nono
+repo_url: https://github.com/always-further/nono
+repo_name: always-further/nono
 
 theme:
   name: material
@@ -60,4 +60,4 @@ markdown_extensions:
 extra:
   social:
     - icon: fontawesome/brands/github
-      link: https://github.com/lukehinds/nono
+      link: https://github.com/always-further/nono
