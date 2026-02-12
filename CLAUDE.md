@@ -4,9 +4,14 @@
 
 nono is a capability-based sandboxing system for running untrusted AI agents with OS-enforced isolation. It uses Landlock (Linux) and Seatbelt (macOS) to create sandboxes where unauthorized operations are structurally impossible.
 
-The project is a Cargo workspace with two crates:
+The project is a Cargo workspace with three members:
 - **nono** (`crates/nono/`) - Core library. Pure sandbox primitive with no built-in security policy.
 - **nono-cli** (`crates/nono-cli/`) - CLI binary. Owns all security policy, profiles, hooks, and UX.
+- **nono-ffi** (`bindings/c/`) - C FFI bindings. Exposes the library via `extern "C"` functions and auto-generated `nono.h` header.
+
+Language bindings live in separate repositories:
+- **nono-py** (`../nono-py/`) - Python bindings via PyO3. Published to PyPI.
+- **nono-ts** (`../nono-ts/`) - TypeScript/Node bindings via napi-rs. Published to npm.
 
 ## Architecture
 
@@ -50,6 +55,15 @@ crates/nono-cli/data/               # Embedded at build time via build.rs
 ├── policy.json                     # Groups, deny rules, built-in profiles (single source of truth)
 └── hooks/
     └── nono-hook.sh                # Hook script for Claude Code
+
+bindings/c/src/                     # C FFI - extern "C" wrappers over core library
+├── lib.rs                          # Thread-local error store, string helpers, version
+├── types.rs                        # #[repr(C)] enums and structs
+├── capability_set.rs               # NonoCapabilitySet opaque pointer API
+├── fs_capability.rs                # Index-based FsCapability accessors
+├── sandbox.rs                      # Sandbox apply/support functions
+├── query.rs                        # NonoQueryContext opaque pointer API
+└── state.rs                        # NonoSandboxState opaque pointer API
 ```
 
 ### Library vs CLI Boundary
@@ -159,7 +173,7 @@ make fmt             # Auto-format
 
 ## References
 
-- [DESIGN-library.md](../DESIGN-library.md) - Library extraction design and progress
-- [DESIGN-diagnostic-and-supervisor.md](../DESIGN-diagnostic-and-supervisor.md) - Process model and supervisor design
+- [DESIGN-library.md](proj/DESIGN-library.md) - Library extraction design and progress
+- [DESIGN-diagnostic-and-supervisor.md](proj/DESIGN-diagnostic-and-supervisor.md) - Process model and supervisor design
 - [Landlock docs](https://landlock.io/)
 - [macOS Sandbox Guide](https://developer.apple.com/library/archive/documentation/Security/Conceptual/AppSandboxDesignGuide/)
