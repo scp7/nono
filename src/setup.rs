@@ -214,7 +214,7 @@ impl SetupRunner {
                   1. Check your kernel config: CONFIG_SECURITY_LANDLOCK=y\n\
                   2. Add to boot params: lsm=landlock,lockdown,yama,integrity,apparmor\n\
                   3. Reboot your system\n\n\
-                See: https://github.com/lukehinds/nono/docs/troubleshooting.md#landlock-not-supported"
+                See: https://github.com/always-further/nono/docs/troubleshooting.md#landlock-not-supported"
                     .to_string(),
             ));
         }
@@ -425,7 +425,7 @@ impl SetupRunner {
                 println!();
             }
 
-            println!("Documentation: https://github.com/lukehinds/nono#readme");
+            println!("Documentation: https://github.com/always-further/nono#readme");
             println!();
             println!("Run 'nono run --help' to see all options.");
         }

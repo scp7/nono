@@ -12,8 +12,8 @@
   <a href="https://opensource.org/licenses/Apache-2.0">
     <img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License"/>
   </a>
-  <a href="https://github.com/lukehinds/nono/actions/workflows/ci.yml">
-    <img src="https://github.com/lukehinds/nono/actions/workflows/ci.yml/badge.svg" alt="CI Status"/>
+  <a href="https://github.com/always-further/nono/actions/workflows/ci.yml">
+    <img src="https://github.com/always-further/nono/actions/workflows/ci.yml/badge.svg" alt="CI Status"/>
   </a>
   <a href="https://discord.gg/pPcjYzGvbS">
     <img src="https://img.shields.io/discord/1384081906773131274?color=7289da&label=Discord&logo=discord&logoColor=white" alt="Discord"/>
@@ -43,11 +43,11 @@ Many more features are planned, see the Roadmap below.
 ### MacOS
 
 ```bash
-brew tap lukehinds/nono 
+brew tap always-further/nono 
 brew install nono
 ```
 > [!NOTE]
-> The package is not in homebrew official yet, [give us a star](https://github.com/lukehinds/nono) to help raise our profile for when request approval
+> The package is not in homebrew official yet, [give us a star](https://github.com/always-further/nono) to help raise our profile for when request approval
 
 ### Linux Package Managers
 
@@ -252,7 +252,7 @@ Full documentation is available at [docs.nono.sh](https://docs.nono.sh), includi
 
 ## Security
 
-If you discover a security vulnerability, please **do not open a public issue**. Public disclosure of vulnerabilities can put all users at risk. Instead, please follow the responsible disclosure process outlined in our [Security Policy](https://github.com/lukehinds/nono/blob/main/SECURITY.md).
+If you discover a security vulnerability, please **do not open a public issue**. Public disclosure of vulnerabilities can put all users at risk. Instead, please follow the responsible disclosure process outlined in our [Security Policy](https://github.com/always-further/nono/blob/main/SECURITY.md).
 
 ## License
 
