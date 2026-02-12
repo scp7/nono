@@ -18,6 +18,9 @@
   <a href="https://discord.gg/pPcjYzGvbS">
     <img src="https://img.shields.io/discord/1384081906773131274?color=7289da&label=Discord&logo=discord&logoColor=white" alt="Discord"/>
   </a>
+  <a href="https://docs.nono.sh">
+    <img src="https://img.shields.io/badge/Docs-docs.nono.sh-green.svg" alt="Documentation"/>
+  </a>
 </p>
 
 </div>
@@ -242,6 +245,10 @@ nono follows a capability-based security model with defense-in-depth:
 5. **All children inherit** - Subprocesses also run under restrictions
 6. **Key isolation** - Secrets are injected securely and cannot be accessed outside the sandbox
 
+
+## Documentation
+
+Full documentation is available at [docs.nono.sh](https://docs.nono.sh), including guides for supported clients, configuration, and building from source.
 
 ## Security
 
