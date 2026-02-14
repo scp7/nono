@@ -233,6 +233,12 @@ pub struct RunArgs {
     #[arg(long)]
     pub supervised: bool,
 
+    /// Skip the post-exit undo review prompt in supervised mode.
+    /// Snapshots are still taken for audit purposes, but the interactive
+    /// restore UI is suppressed.
+    #[arg(long)]
+    pub no_undo_prompt: bool,
+
     /// Command to run inside the sandbox
     #[arg(required = true)]
     pub command: Vec<String>,

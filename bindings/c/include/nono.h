@@ -29,7 +29,7 @@
  */
 typedef enum NonoCapabilitySourceTag {
     /**
-     * Added directly by the user
+     * Added directly by the user via CLI flags
      */
     NONO_CAPABILITY_SOURCE_TAG_USER = 0,
     /**
@@ -40,6 +40,10 @@ typedef enum NonoCapabilitySourceTag {
      * System-level path
      */
     NONO_CAPABILITY_SOURCE_TAG_SYSTEM = 2,
+    /**
+     * Added from a profile's filesystem section
+     */
+    NONO_CAPABILITY_SOURCE_TAG_PROFILE = 3,
 } NonoCapabilitySourceTag;
 
 /**

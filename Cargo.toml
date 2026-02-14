@@ -30,6 +30,14 @@ tracing = "0.1"
 # Secure credential handling
 zeroize = { version = "1", features = ["alloc"] }
 
+# Hashing
+sha2 = "0.10"
+
+# Filesystem walking
+walkdir = "2"
+ignore = "0.4"
+globset = "0.4"
+
 # Testing
 tempfile = "3"
 

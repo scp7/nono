@@ -127,6 +127,23 @@ pub enum NonoError {
     #[error("Command execution failed: {0}")]
     CommandExecution(#[source] std::io::Error),
 
+    // Undo/snapshot errors
+    #[error("Object store error: {0}")]
+    ObjectStore(String),
+
+    #[error("Snapshot error: {0}")]
+    Snapshot(String),
+
+    #[error("Hash integrity mismatch for {path}: expected {expected}, got {actual}")]
+    HashMismatch {
+        path: String,
+        expected: String,
+        actual: String,
+    },
+
+    #[error("Session not found: {0}")]
+    SessionNotFound(String),
+
     // I/O errors
     #[error("I/O error: {0}")]
     Io(std::io::Error),

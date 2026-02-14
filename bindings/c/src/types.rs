@@ -41,12 +41,14 @@ pub fn access_mode_to_raw(mode: nono::AccessMode) -> u32 {
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NonoCapabilitySourceTag {
-    /// Added directly by the user
+    /// Added directly by the user via CLI flags
     User = 0,
     /// Resolved from a named policy group
     Group = 1,
     /// System-level path
     System = 2,
+    /// Added from a profile's filesystem section
+    Profile = 3,
 }
 
 /// Status of a query result.

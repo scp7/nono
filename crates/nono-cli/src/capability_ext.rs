@@ -6,7 +6,7 @@
 use crate::cli::SandboxArgs;
 use crate::policy;
 use crate::profile::{expand_vars, Profile};
-use nono::{AccessMode, CapabilitySet, FsCapability, NonoError, Result};
+use nono::{AccessMode, CapabilitySet, CapabilitySource, FsCapability, NonoError, Result};
 use std::path::Path;
 use tracing::{debug, warn};
 
@@ -145,14 +145,18 @@ impl CapabilitySetExt for CapabilitySet {
         let needs_unlink_overrides = resolved.needs_unlink_overrides;
         debug!("Resolved {} policy groups", resolved.names.len());
 
-        // Process profile filesystem config (profile-specific paths on top of groups)
+        // Process profile filesystem config (profile-specific paths on top of groups).
+        // These are marked as CapabilitySource::Profile so they are displayed in
+        // the banner but NOT tracked for undo snapshots (only User-sourced paths
+        // representing the project workspace are tracked).
         let fs = &profile.filesystem;
 
         // Directories with read+write access
         for path_template in &fs.allow {
             let path = expand_vars(path_template, workdir)?;
             let label = format!("Profile path '{}' does not exist, skipping", path_template);
-            if let Some(cap) = try_new_dir(&path, AccessMode::ReadWrite, &label)? {
+            if let Some(mut cap) = try_new_dir(&path, AccessMode::ReadWrite, &label)? {
+                cap.source = CapabilitySource::Profile;
                 caps.add_fs(cap);
             }
         }
@@ -161,7 +165,8 @@ impl CapabilitySetExt for CapabilitySet {
         for path_template in &fs.read {
             let path = expand_vars(path_template, workdir)?;
             let label = format!("Profile path '{}' does not exist, skipping", path_template);
-            if let Some(cap) = try_new_dir(&path, AccessMode::Read, &label)? {
+            if let Some(mut cap) = try_new_dir(&path, AccessMode::Read, &label)? {
+                cap.source = CapabilitySource::Profile;
                 caps.add_fs(cap);
             }
         }
@@ -170,7 +175,8 @@ impl CapabilitySetExt for CapabilitySet {
         for path_template in &fs.write {
             let path = expand_vars(path_template, workdir)?;
             let label = format!("Profile path '{}' does not exist, skipping", path_template);
-            if let Some(cap) = try_new_dir(&path, AccessMode::Write, &label)? {
+            if let Some(mut cap) = try_new_dir(&path, AccessMode::Write, &label)? {
+                cap.source = CapabilitySource::Profile;
                 caps.add_fs(cap);
             }
         }
@@ -179,7 +185,8 @@ impl CapabilitySetExt for CapabilitySet {
         for path_template in &fs.allow_file {
             let path = expand_vars(path_template, workdir)?;
             let label = format!("Profile file '{}' does not exist, skipping", path_template);
-            if let Some(cap) = try_new_file(&path, AccessMode::ReadWrite, &label)? {
+            if let Some(mut cap) = try_new_file(&path, AccessMode::ReadWrite, &label)? {
+                cap.source = CapabilitySource::Profile;
                 caps.add_fs(cap);
             }
         }
@@ -188,7 +195,8 @@ impl CapabilitySetExt for CapabilitySet {
         for path_template in &fs.read_file {
             let path = expand_vars(path_template, workdir)?;
             let label = format!("Profile file '{}' does not exist, skipping", path_template);
-            if let Some(cap) = try_new_file(&path, AccessMode::Read, &label)? {
+            if let Some(mut cap) = try_new_file(&path, AccessMode::Read, &label)? {
+                cap.source = CapabilitySource::Profile;
                 caps.add_fs(cap);
             }
         }
@@ -197,7 +205,8 @@ impl CapabilitySetExt for CapabilitySet {
         for path_template in &fs.write_file {
             let path = expand_vars(path_template, workdir)?;
             let label = format!("Profile file '{}' does not exist, skipping", path_template);
-            if let Some(cap) = try_new_file(&path, AccessMode::Write, &label)? {
+            if let Some(mut cap) = try_new_file(&path, AccessMode::Write, &label)? {
+                cap.source = CapabilitySource::Profile;
                 caps.add_fs(cap);
             }
         }

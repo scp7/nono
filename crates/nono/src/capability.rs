@@ -10,22 +10,35 @@ use std::path::{Path, PathBuf};
 /// Source of a filesystem capability for diagnostics
 ///
 /// Tracks whether a capability was added by the user directly,
-/// resolved from a named policy group, or is a system-level path.
+/// from a profile's filesystem section, resolved from a named
+/// policy group, or is a system-level path.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CapabilitySource {
-    /// Added directly by the user (--allow, --read, profile filesystem section)
+    /// Added directly by the user via CLI flags (--allow, --read, --allow-cwd)
     #[default]
     User,
+    /// Added from a profile's filesystem section (allow, read, etc.)
+    Profile,
     /// Resolved from a named policy group
     Group(String),
     /// System-level path required for execution (e.g., /usr, /bin, /lib)
     System,
 }
 
+impl CapabilitySource {
+    /// Whether this source represents explicit user intent (CLI flags or profile config).
+    /// Used by deduplication to prefer user-intentional entries over system/group entries.
+    #[must_use]
+    pub fn is_user_intent(&self) -> bool {
+        matches!(self, CapabilitySource::User | CapabilitySource::Profile)
+    }
+}
+
 impl std::fmt::Display for CapabilitySource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             CapabilitySource::User => write!(f, "user"),
+            CapabilitySource::Profile => write!(f, "profile"),
             CapabilitySource::Group(name) => write!(f, "group:{}", name),
             CapabilitySource::System => write!(f, "system"),
         }
@@ -514,10 +527,10 @@ impl CapabilitySet {
                 let existing = &self.fs[existing_idx];
 
                 // Determine which entry to keep.
-                // User-sourced entries always win over non-User entries
-                // regardless of access level (user intent takes priority).
-                let new_is_user = matches!(cap.source, CapabilitySource::User);
-                let existing_is_user = matches!(existing.source, CapabilitySource::User);
+                // User-intent entries (User/Profile) always win over
+                // system/group entries regardless of access level.
+                let new_is_user = cap.source.is_user_intent();
+                let existing_is_user = existing.source.is_user_intent();
 
                 let keep_new = if new_is_user && !existing_is_user {
                     // New is User, existing is System/Group -> keep User

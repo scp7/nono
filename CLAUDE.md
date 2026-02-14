@@ -173,7 +173,9 @@ make fmt             # Auto-format
 
 ## References
 
-- [DESIGN-library.md](proj/DESIGN-library.md) - Library extraction design and progress
-- [DESIGN-diagnostic-and-supervisor.md](proj/DESIGN-diagnostic-and-supervisor.md) - Process model and supervisor design
+- [DESIGN-library.md](proj/DESIGN-library.md) - Library architecture, workspace layout, bindings
+- [DESIGN-group-policy.md](proj/DESIGN-group-policy.md) - Group-based security policy, `never_grant`
+- [DESIGN-supervisor.md](proj/DESIGN-supervisor.md) - Process model, execution strategies, supervisor IPC
+- [DESIGN-undo-system.md](proj/DESIGN-undo-system.md) - Content-addressable snapshot system
 - [Landlock docs](https://landlock.io/)
 - [macOS Sandbox Guide](https://developer.apple.com/library/archive/documentation/Security/Conceptual/AppSandboxDesignGuide/)

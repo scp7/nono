@@ -52,6 +52,7 @@ pub mod keystore;
 pub mod query;
 pub mod sandbox;
 pub mod state;
+pub mod undo;
 
 // Re-exports for convenience
 pub use capability::{AccessMode, CapabilitySet, CapabilitySource, FsCapability};

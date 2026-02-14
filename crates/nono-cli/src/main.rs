@@ -14,6 +14,7 @@ mod profile;
 mod query_ext;
 mod sandbox_state;
 mod setup;
+mod undo_ui;
 
 use capability_ext::CapabilitySetExt;
 use clap::Parser;
@@ -54,6 +55,7 @@ fn run() -> Result<()> {
                 args.no_diagnostics,
                 args.direct_exec,
                 args.supervised,
+                args.no_undo_prompt,
                 cli.silent,
             )
         }
@@ -236,6 +238,7 @@ fn run_sandbox(
     no_diagnostics: bool,
     direct_exec: bool,
     supervised: bool,
+    no_undo_prompt: bool,
     silent: bool,
 ) -> Result<()> {
     // Check if we have a command to run
@@ -271,7 +274,10 @@ fn run_sandbox(
             no_diagnostics,
             direct_exec,
             supervised,
+            no_undo_prompt,
             silent,
+            undo_exclude_patterns: prepared.undo_exclude_patterns,
+            undo_exclude_globs: prepared.undo_exclude_globs,
         },
     )
 }
@@ -322,7 +328,10 @@ fn run_shell(args: ShellArgs, silent: bool) -> Result<()> {
             no_diagnostics: true,
             direct_exec: false,
             supervised: false,
+            no_undo_prompt: false,
             silent,
+            undo_exclude_patterns: Vec::new(),
+            undo_exclude_globs: Vec::new(),
         },
     )
 }
@@ -333,7 +342,12 @@ struct ExecutionFlags {
     no_diagnostics: bool,
     direct_exec: bool,
     supervised: bool,
+    no_undo_prompt: bool,
     silent: bool,
+    /// Profile-specific undo exclusion patterns (additive on base)
+    undo_exclude_patterns: Vec<String>,
+    /// Profile-specific undo exclusion globs (filename matching)
+    undo_exclude_globs: Vec<String>,
 }
 
 fn execute_sandboxed(
@@ -383,18 +397,19 @@ fn execute_sandboxed(
         }
     }
 
-    // Determine execution strategy
-    let strategy = if flags.interactive || flags.direct_exec {
-        exec_strategy::ExecStrategy::Direct
-    } else if flags.supervised {
+    // Determine execution strategy.
+    // --supervised takes precedence over profile interactive mode because
+    // the user explicitly requested supervised features (undo snapshots).
+    let strategy = if flags.supervised {
         exec_strategy::ExecStrategy::Supervised
+    } else if flags.interactive || flags.direct_exec {
+        exec_strategy::ExecStrategy::Direct
     } else {
         exec_strategy::ExecStrategy::Monitor
     };
 
-    // Warn user about supervised mode's weaker security posture
     if matches!(strategy, exec_strategy::ExecStrategy::Supervised) {
-        output::print_supervised_warning(flags.silent);
+        output::print_supervised_info(flags.silent);
     }
 
     // Apply sandbox BEFORE fork for Direct and Monitor modes.
@@ -455,7 +470,116 @@ fn execute_sandboxed(
         }
         exec_strategy::ExecStrategy::Supervised => {
             output::print_applying_sandbox(flags.silent);
+
+            // --- Undo snapshot lifecycle ---
+            // Collect tracked paths: only USER-specified directories with write access.
+            // System/group paths (caches, frameworks, etc.) are excluded to avoid
+            // snapshotting system directories the user didn't ask to track.
+            let tracked_paths: Vec<std::path::PathBuf> = caps
+                .fs_capabilities()
+                .iter()
+                .filter(|c| {
+                    !c.is_file
+                        && matches!(c.access, AccessMode::Write | AccessMode::ReadWrite)
+                        && matches!(c.source, nono::CapabilitySource::User)
+                })
+                .map(|c| c.resolved.clone())
+                .collect();
+
+            // Set up snapshot manager if we have writable paths to track
+            let undo_state = if !tracked_paths.is_empty() {
+                let session_id = format!(
+                    "{}-{}",
+                    chrono::Local::now().format("%Y%m%d-%H%M%S"),
+                    std::process::id()
+                );
+
+                let home = dirs::home_dir().ok_or(NonoError::HomeNotFound)?;
+                let session_dir = home.join(".nono").join("undo").join(&session_id);
+                std::fs::create_dir_all(&session_dir).map_err(|e| {
+                    NonoError::Snapshot(format!(
+                        "Failed to create session directory {}: {}",
+                        session_dir.display(),
+                        e
+                    ))
+                })?;
+
+                // Set directory permissions to 0700
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let perms = std::fs::Permissions::from_mode(0o700);
+                    let _ = std::fs::set_permissions(&session_dir, perms);
+                }
+
+                let mut patterns = undo_base_exclusions();
+                patterns.extend(flags.undo_exclude_patterns.iter().cloned());
+                patterns.dedup();
+                let exclusion_config = nono::undo::ExclusionConfig {
+                    use_gitignore: true,
+                    exclude_patterns: patterns,
+                    exclude_globs: flags.undo_exclude_globs.clone(),
+                    force_include: Vec::new(),
+                };
+                // Use the first tracked path as gitignore root
+                let gitignore_root = tracked_paths
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| std::path::PathBuf::from("."));
+                let exclusion =
+                    nono::undo::ExclusionFilter::new(exclusion_config, &gitignore_root)?;
+
+                let mut manager = nono::undo::SnapshotManager::new(
+                    session_dir.clone(),
+                    tracked_paths.clone(),
+                    exclusion,
+                )?;
+
+                let baseline = manager.create_baseline()?;
+
+                output::print_undo_tracking(&tracked_paths, flags.silent);
+
+                Some((manager, baseline, session_id, session_dir))
+            } else {
+                None
+            };
+
+            let started = chrono::Local::now().to_rfc3339();
             let exit_code = exec_strategy::execute_supervised(&config)?;
+            let ended = chrono::Local::now().to_rfc3339();
+
+            // Post-exit: take final snapshot and offer restore
+            if let Some((mut manager, baseline, session_id, _session_dir)) = undo_state {
+                let (final_manifest, changes) = manager.create_incremental(&baseline)?;
+
+                // Collect merkle roots
+                let merkle_roots = vec![baseline.merkle_root, final_manifest.merkle_root];
+
+                // Save session metadata
+                let meta = nono::undo::SessionMetadata {
+                    session_id,
+                    started,
+                    ended: Some(ended),
+                    command: command.clone(),
+                    tracked_paths,
+                    snapshot_count: manager.snapshot_count(),
+                    exit_code: Some(exit_code),
+                    merkle_roots,
+                    signature: None,
+                    signing_key_id: None,
+                };
+                manager.save_session_metadata(&meta)?;
+
+                // Show summary and offer restore
+                if !changes.is_empty() {
+                    output::print_undo_session_summary(&changes, flags.silent);
+
+                    if !flags.no_undo_prompt && !flags.silent {
+                        let _ = undo_ui::review_and_restore(&manager, &baseline, &changes);
+                    }
+                }
+            }
+
             // Clean up capability state file after child exits
             if cap_file_path.exists() {
                 let _ = std::fs::remove_file(&cap_file_path);
@@ -467,12 +591,34 @@ fn execute_sandboxed(
     }
 }
 
+/// Base exclusion patterns for undo snapshots.
+///
+/// These are CLI policy — the library provides only the matching mechanism.
+/// Profiles can add additional patterns via `undo.exclude_patterns` in
+/// policy.json. Patterns without `/` match exact path components; patterns
+/// with `/` match as substrings of the full path.
+fn undo_base_exclusions() -> Vec<String> {
+    [
+        // VCS internals
+        ".git/objects",
+        // OS metadata
+        ".DS_Store",
+    ]
+    .iter()
+    .map(|s| String::from(*s))
+    .collect()
+}
+
 /// Result of sandbox preparation
 struct PreparedSandbox {
     caps: CapabilitySet,
     secrets: Vec<nono::LoadedSecret>,
     /// Whether the profile indicates interactive mode (needs TTY)
     interactive: bool,
+    /// Profile-specific undo exclusion patterns (additive on base patterns)
+    undo_exclude_patterns: Vec<String>,
+    /// Profile-specific undo exclusion globs (filename matching)
+    undo_exclude_globs: Vec<String>,
 }
 
 fn prepare_sandbox(args: &SandboxArgs, silent: bool) -> Result<PreparedSandbox> {
@@ -554,6 +700,14 @@ fn prepare_sandbox(args: &SandboxArgs, silent: bool) -> Result<PreparedSandbox> 
         .as_ref()
         .map(|p| p.interactive)
         .unwrap_or(false);
+    let profile_undo_patterns = loaded_profile
+        .as_ref()
+        .map(|p| p.undo.exclude_patterns.clone())
+        .unwrap_or_default();
+    let profile_undo_globs = loaded_profile
+        .as_ref()
+        .map(|p| p.undo.exclude_globs.clone())
+        .unwrap_or_default();
 
     // Build capabilities from profile or arguments
     let mut caps = if let Some(ref prof) = loaded_profile {
@@ -653,6 +807,8 @@ fn prepare_sandbox(args: &SandboxArgs, silent: bool) -> Result<PreparedSandbox> 
         caps,
         secrets: loaded_secrets,
         interactive: profile_interactive,
+        undo_exclude_patterns: profile_undo_patterns,
+        undo_exclude_globs: profile_undo_globs,
     })
 }
 

@@ -133,6 +133,7 @@ pub unsafe extern "C" fn nono_capability_set_fs_source_tag(
     match caps.inner.fs_capabilities().get(index) {
         Some(cap) => match &cap.source {
             nono::CapabilitySource::User => NonoCapabilitySourceTag::User,
+            nono::CapabilitySource::Profile => NonoCapabilitySourceTag::Profile,
             nono::CapabilitySource::Group(_) => NonoCapabilitySourceTag::Group,
             nono::CapabilitySource::System => NonoCapabilitySourceTag::System,
         },

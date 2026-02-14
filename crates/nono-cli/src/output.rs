@@ -1,7 +1,7 @@
 //! CLI output styling for nono
 
 use colored::Colorize;
-use nono::{AccessMode, CapabilitySet, CapabilitySource, NonoError, Result};
+use nono::{AccessMode, CapabilitySet, NonoError, Result};
 use rand::seq::SliceRandom;
 use std::ffi::{OsStr, OsString};
 use std::io::{BufRead, IsTerminal, Write};
@@ -66,10 +66,10 @@ pub fn print_capabilities(caps: &CapabilitySet, verbose: u8, silent: bool) {
             // Show everything with source labels
             (fs_caps.to_vec(), 0)
         } else {
-            // Only show user-specified capabilities
+            // Only show user-specified and profile capabilities
             let user: Vec<_> = fs_caps
                 .iter()
-                .filter(|c| matches!(c.source, CapabilitySource::User))
+                .filter(|c| c.source.is_user_intent())
                 .cloned()
                 .collect();
             let hidden = fs_caps.len() - user.len();
@@ -125,19 +125,14 @@ pub fn print_capabilities(caps: &CapabilitySet, verbose: u8, silent: bool) {
     eprintln!();
 }
 
-/// Print warning about supervised mode's weaker security posture
-pub fn print_supervised_warning(silent: bool) {
+/// Print supervised mode status
+pub fn print_supervised_info(silent: bool) {
     if silent {
         return;
     }
     eprintln!(
         "{}",
-        "WARNING: Supervised mode - parent process is NOT sandboxed.".yellow()
-    );
-    eprintln!(
-        "{}",
-        "The parent has broader attack surface than Monitor mode. Use only when required."
-            .truecolor(150, 150, 150)
+        "Supervised mode: child sandboxed, parent manages undo snapshots.".truecolor(150, 150, 150)
     );
     eprintln!();
 }
@@ -183,6 +178,78 @@ pub fn print_dry_run(program: &OsStr, cmd_args: &[OsString], silent: bool) {
         "Dry run mode - sandbox would be applied with above capabilities".yellow()
     );
     eprintln!("Command: {:?}", command);
+}
+
+/// Print undo tracking status during session start
+pub fn print_undo_tracking(paths: &[std::path::PathBuf], silent: bool) {
+    if silent {
+        return;
+    }
+    eprintln!(
+        "{}",
+        "Undo snapshots enabled (supervised mode).".truecolor(150, 150, 150)
+    );
+    if paths.len() <= 3 {
+        for path in paths {
+            eprintln!(
+                "  {} {}",
+                "tracking:".truecolor(100, 100, 100),
+                path.display().to_string().white()
+            );
+        }
+    } else {
+        for path in &paths[..2] {
+            eprintln!(
+                "  {} {}",
+                "tracking:".truecolor(100, 100, 100),
+                path.display().to_string().white()
+            );
+        }
+        eprintln!(
+            "  {}",
+            format!("+ {} more paths", paths.len() - 2).truecolor(100, 100, 100)
+        );
+    }
+    eprintln!();
+}
+
+/// Print post-exit summary of changes detected by the undo system
+pub fn print_undo_session_summary(changes: &[nono::undo::Change], silent: bool) {
+    if silent || changes.is_empty() {
+        return;
+    }
+
+    let created = changes
+        .iter()
+        .filter(|c| c.change_type == nono::undo::ChangeType::Created)
+        .count();
+    let modified = changes
+        .iter()
+        .filter(|c| c.change_type == nono::undo::ChangeType::Modified)
+        .count();
+    let deleted = changes
+        .iter()
+        .filter(|c| c.change_type == nono::undo::ChangeType::Deleted)
+        .count();
+
+    let mut parts = Vec::new();
+    if created > 0 {
+        parts.push(format!("{created} created"));
+    }
+    if modified > 0 {
+        parts.push(format!("{modified} modified"));
+    }
+    if deleted > 0 {
+        parts.push(format!("{deleted} deleted"));
+    }
+
+    eprintln!();
+    eprintln!(
+        "{} {} files changed. ({})",
+        "[nono]".truecolor(204, 102, 0),
+        changes.len(),
+        parts.join(", ")
+    );
 }
 
 /// Prompt the user to confirm sharing the current working directory.

@@ -1,0 +1,287 @@
+//! Core types for the undo/snapshot system
+//!
+//! Defines content hashes, file state, change tracking, and session metadata
+//! used by the object store and snapshot manager.
+
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::fmt;
+use std::path::PathBuf;
+use std::str::FromStr;
+
+/// A SHA-256 content hash (32 bytes)
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ContentHash([u8; 32]);
+
+impl ContentHash {
+    /// Create a ContentHash from raw bytes
+    #[must_use]
+    pub fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    /// Get the raw bytes
+    #[must_use]
+    pub fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+
+    /// Return the first 2 hex characters (used for object store directory sharding)
+    #[must_use]
+    pub fn prefix(&self) -> String {
+        format!("{:02x}", self.0[0])
+    }
+
+    /// Return the remaining hex characters after the prefix
+    #[must_use]
+    pub fn suffix(&self) -> String {
+        let mut s = String::with_capacity(62);
+        for byte in &self.0[1..] {
+            s.push_str(&format!("{byte:02x}"));
+        }
+        s
+    }
+}
+
+impl fmt::Display for ContentHash {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for byte in &self.0 {
+            write!(f, "{byte:02x}")?;
+        }
+        Ok(())
+    }
+}
+
+impl fmt::Debug for ContentHash {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "ContentHash({})", self)
+    }
+}
+
+impl FromStr for ContentHash {
+    type Err = ContentHashParseError;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        if s.len() != 64 {
+            return Err(ContentHashParseError::InvalidLength(s.len()));
+        }
+        let mut bytes = [0u8; 32];
+        for (i, chunk) in s.as_bytes().chunks(2).enumerate() {
+            let hex_str =
+                std::str::from_utf8(chunk).map_err(|_| ContentHashParseError::InvalidHex)?;
+            bytes[i] =
+                u8::from_str_radix(hex_str, 16).map_err(|_| ContentHashParseError::InvalidHex)?;
+        }
+        Ok(Self(bytes))
+    }
+}
+
+/// Error parsing a ContentHash from a hex string
+#[derive(Debug, Clone)]
+pub enum ContentHashParseError {
+    /// Hex string was not 64 characters
+    InvalidLength(usize),
+    /// Hex string contained invalid characters
+    InvalidHex,
+}
+
+impl fmt::Display for ContentHashParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidLength(len) => {
+                write!(f, "expected 64 hex characters, got {len}")
+            }
+            Self::InvalidHex => write!(f, "invalid hex character"),
+        }
+    }
+}
+
+impl std::error::Error for ContentHashParseError {}
+
+impl Serialize for ContentHash {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for ContentHash {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        Self::from_str(&s).map_err(serde::de::Error::custom)
+    }
+}
+
+/// State of a single file at snapshot time
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileState {
+    /// SHA-256 hash of file content
+    pub hash: ContentHash,
+    /// File size in bytes
+    pub size: u64,
+    /// Last modification time (seconds since epoch)
+    pub mtime: i64,
+    /// File permissions (Unix mode bits)
+    pub permissions: u32,
+}
+
+/// Type of change detected between snapshots
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ChangeType {
+    /// File was created (not in previous snapshot)
+    Created,
+    /// File content was modified
+    Modified,
+    /// File was deleted (in previous snapshot but not current)
+    Deleted,
+    /// Only file permissions changed
+    PermissionsChanged,
+}
+
+impl fmt::Display for ChangeType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Created => write!(f, "+"),
+            Self::Modified => write!(f, "~"),
+            Self::Deleted => write!(f, "-"),
+            Self::PermissionsChanged => write!(f, "p"),
+        }
+    }
+}
+
+/// A change detected between two snapshots
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Change {
+    /// Path to the changed file
+    pub path: PathBuf,
+    /// Type of change
+    pub change_type: ChangeType,
+    /// Size delta in bytes (positive = grew, negative = shrank)
+    pub size_delta: Option<i64>,
+    /// Hash before the change (None for Created)
+    pub old_hash: Option<ContentHash>,
+    /// Hash after the change (None for Deleted)
+    pub new_hash: Option<ContentHash>,
+}
+
+/// Metadata for an undo session
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionMetadata {
+    /// Unique session identifier
+    pub session_id: String,
+    /// Session start time (ISO 8601)
+    pub started: String,
+    /// Session end time (ISO 8601), None if still running
+    pub ended: Option<String>,
+    /// Command that was executed
+    pub command: Vec<String>,
+    /// Paths being tracked for changes
+    pub tracked_paths: Vec<PathBuf>,
+    /// Number of snapshots taken
+    pub snapshot_count: u32,
+    /// Child process exit code
+    pub exit_code: Option<i32>,
+    /// Merkle roots from each snapshot (chain of state commitments)
+    pub merkle_roots: Vec<ContentHash>,
+    /// Optional cryptographic signature of the session (for hardware key signing)
+    pub signature: Option<String>,
+    /// Identifier of the signing key used
+    pub signing_key_id: Option<String>,
+}
+
+/// A snapshot manifest capturing filesystem state at a point in time
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SnapshotManifest {
+    /// Snapshot sequence number (0 = baseline)
+    pub number: u32,
+    /// Timestamp when snapshot was taken (ISO 8601)
+    pub timestamp: String,
+    /// Parent snapshot number (None for baseline)
+    pub parent: Option<u32>,
+    /// Map of file paths to their state at snapshot time
+    pub files: HashMap<PathBuf, FileState>,
+    /// Merkle root over all file hashes (cryptographic state commitment)
+    pub merkle_root: ContentHash,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn content_hash_hex_roundtrip() {
+        let bytes = [
+            0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45,
+            0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01,
+            0x23, 0x45, 0x67, 0x89,
+        ];
+        let hash = ContentHash::from_bytes(bytes);
+        let hex = hash.to_string();
+        let parsed: ContentHash = hex.parse().expect("should parse");
+        assert_eq!(hash, parsed);
+    }
+
+    #[test]
+    fn content_hash_prefix_suffix() {
+        let bytes = [
+            0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45,
+            0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01,
+            0x23, 0x45, 0x67, 0x89,
+        ];
+        let hash = ContentHash::from_bytes(bytes);
+        assert_eq!(hash.prefix(), "ab");
+        assert!(hash.suffix().starts_with("cdef"));
+        assert_eq!(hash.prefix().len() + hash.suffix().len(), 64);
+    }
+
+    #[test]
+    fn content_hash_invalid_length() {
+        let result = "abc".parse::<ContentHash>();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn content_hash_invalid_hex() {
+        let result = "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"
+            .parse::<ContentHash>();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn content_hash_serde_roundtrip() {
+        let bytes = [42u8; 32];
+        let hash = ContentHash::from_bytes(bytes);
+        let json = serde_json::to_string(&hash).expect("should serialize");
+        let parsed: ContentHash = serde_json::from_str(&json).expect("should deserialize");
+        assert_eq!(hash, parsed);
+    }
+
+    #[test]
+    fn change_type_display() {
+        assert_eq!(ChangeType::Created.to_string(), "+");
+        assert_eq!(ChangeType::Modified.to_string(), "~");
+        assert_eq!(ChangeType::Deleted.to_string(), "-");
+        assert_eq!(ChangeType::PermissionsChanged.to_string(), "p");
+    }
+
+    #[test]
+    fn snapshot_manifest_serde_roundtrip() {
+        let manifest = SnapshotManifest {
+            number: 0,
+            timestamp: "2025-01-01T00:00:00Z".to_string(),
+            parent: None,
+            files: HashMap::new(),
+            merkle_root: ContentHash::from_bytes([0u8; 32]),
+        };
+        let json = serde_json::to_string(&manifest).expect("should serialize");
+        let parsed: SnapshotManifest = serde_json::from_str(&json).expect("should deserialize");
+        assert_eq!(parsed.number, 0);
+        assert!(parsed.parent.is_none());
+        assert!(parsed.files.is_empty());
+    }
+}

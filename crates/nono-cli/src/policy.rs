@@ -113,6 +113,8 @@ pub struct ProfileDef {
     #[serde(default)]
     pub hooks: profile::HooksConfig,
     #[serde(default)]
+    pub undo: profile::UndoConfig,
+    #[serde(default)]
     pub interactive: bool,
 }
 
@@ -139,6 +141,7 @@ impl ProfileDef {
             secrets: self.secrets.clone(),
             workdir: self.workdir.clone(),
             hooks: self.hooks.clone(),
+            undo: self.undo.clone(),
             interactive: self.interactive,
         }
     }

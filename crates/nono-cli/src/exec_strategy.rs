@@ -501,10 +501,15 @@ pub fn execute_monitor(config: &ExecConfig<'_>) -> Result<i32> {
 /// 2. Reject keyring threading context (deadlock risk)
 /// 3. Verify single-threaded execution
 /// 4. Apply PR_SET_DUMPABLE(0) before fork (Linux - inherited, closes TOCTOU)
-/// 5. Create pipes for output interception
-/// 6. Fork into parent and child
-/// 7. Child: apply sandbox, apply ptrace hardening, redirect output, exec
-/// 8. Parent: apply PT_DENY_ATTACH (macOS, fatal on failure), read pipes, wait
+/// 5. Fork into parent and child
+/// 6. Child: apply sandbox, apply ptrace hardening, close inherited FDs, exec
+/// 7. Parent: apply PT_DENY_ATTACH (macOS, fatal on failure), wait for child
+///
+/// Unlike Monitor mode, Supervised mode does NOT pipe stdout/stderr. The child
+/// inherits the parent's terminal directly, preserving TTY semantics for
+/// interactive programs (e.g., Claude Code, vim). Diagnostic injection is not
+/// needed because the parent is alive after the child exits and can print
+/// diagnostics and undo UI directly.
 pub fn execute_supervised(config: &ExecConfig<'_>) -> Result<i32> {
     let program = &config.command[0];
     let cmd_args = &config.command[1..];
@@ -620,24 +625,6 @@ pub fn execute_supervised(config: &ExecConfig<'_>) -> Result<i32> {
         }
     }
 
-    // Create pipes for stdout and stderr interception
-    let (stdout_read, stdout_write): (OwnedFd, OwnedFd) = nix::unistd::pipe()
-        .map_err(|e| NonoError::SandboxInit(format!("pipe() for stdout failed: {}", e)))?;
-    let (stderr_read, stderr_write): (OwnedFd, OwnedFd) = nix::unistd::pipe()
-        .map_err(|e| NonoError::SandboxInit(format!("pipe() for stderr failed: {}", e)))?;
-
-    // Extract raw FDs before fork
-    let stdout_write_fd = stdout_write.as_raw_fd();
-    let stderr_write_fd = stderr_write.as_raw_fd();
-    let stdout_read_fd = stdout_read.as_raw_fd();
-    let stderr_read_fd = stderr_read.as_raw_fd();
-
-    // Wrap in ManuallyDrop to prevent Drop from running in child
-    let stdout_read = ManuallyDrop::new(stdout_read);
-    let stdout_write = ManuallyDrop::new(stdout_write);
-    let stderr_read = ManuallyDrop::new(stderr_read);
-    let stderr_write = ManuallyDrop::new(stderr_write);
-
     // Compute max FD in parent (get_max_fd may allocate on Linux)
     let max_fd = get_max_fd();
 
@@ -654,17 +641,18 @@ pub fn execute_supervised(config: &ExecConfig<'_>) -> Result<i32> {
             // Sandbox::apply() allocates (Seatbelt profile generation, Landlock
             // PathFd opens) but this is safe because we validated single-threaded
             // execution before fork, giving us a clean heap.
+            //
+            // The child inherits the parent's stdin/stdout/stderr directly
+            // (no pipe redirection). This preserves TTY semantics for
+            // interactive programs like Claude Code.
 
-            // Apply the sandbox. On failure, report to stderr pipe and exit.
-            // We can allocate here because we validated single-threaded execution
-            // before fork, so no contended allocator locks.
+            // Apply the sandbox. On failure, report to stderr and exit.
             if let Err(e) = Sandbox::apply(config.caps) {
-                // Format the error message including details
                 let detail = format!("nono: failed to apply sandbox in supervised child: {}\n", e);
                 let msg = detail.as_bytes();
                 unsafe {
                     libc::write(
-                        stderr_write_fd,
+                        libc::STDERR_FILENO,
                         msg.as_ptr().cast::<libc::c_void>(),
                         msg.len(),
                     );
@@ -686,30 +674,8 @@ pub fn execute_supervised(config: &ExecConfig<'_>) -> Result<i32> {
                 }
             }
 
-            // Close read ends of pipes
-            unsafe {
-                libc::close(stdout_read_fd);
-                libc::close(stderr_read_fd);
-            }
-
-            // Close inherited FDs from keyring/other sources
-            close_inherited_fds(max_fd, &[stdout_write_fd, stderr_write_fd]);
-
-            // Redirect stdout to pipe
-            unsafe {
-                if stdout_write_fd != libc::STDOUT_FILENO {
-                    libc::dup2(stdout_write_fd, libc::STDOUT_FILENO);
-                    libc::close(stdout_write_fd);
-                }
-            }
-
-            // Redirect stderr to pipe
-            unsafe {
-                if stderr_write_fd != libc::STDERR_FILENO {
-                    libc::dup2(stderr_write_fd, libc::STDERR_FILENO);
-                    libc::close(stderr_write_fd);
-                }
-            }
+            // Close inherited FDs (but NOT stdin/stdout/stderr which are inherited)
+            close_inherited_fds(max_fd, &[]);
 
             // Execute using pre-prepared CStrings (no allocation)
             unsafe {
@@ -731,8 +697,6 @@ pub fn execute_supervised(config: &ExecConfig<'_>) -> Result<i32> {
             {
                 use nix::sys::prctl;
                 if let Err(e) = prctl::set_dumpable(false) {
-                    // Kill the child before returning - we can't leave an
-                    // unsandboxed parent running without ptrace protection.
                     let _ = signal::kill(child, Signal::SIGKILL);
                     let _ = waitpid(child, None);
                     return Err(NonoError::SandboxInit(format!(
@@ -746,14 +710,11 @@ pub fn execute_supervised(config: &ExecConfig<'_>) -> Result<i32> {
             #[cfg(target_os = "macos")]
             {
                 const PT_DENY_ATTACH: libc::c_int = 31;
-                // SAFETY: ptrace(PT_DENY_ATTACH) is a read-only security operation
                 let result = unsafe {
                     libc::ptrace(PT_DENY_ATTACH, 0, std::ptr::null_mut::<libc::c_char>(), 0)
                 };
                 if result != 0 {
                     let err = std::io::Error::last_os_error();
-                    // Kill the child before returning - we can't leave an
-                    // unsandboxed parent running without ptrace protection.
                     let _ = signal::kill(child, Signal::SIGKILL);
                     let _ = waitpid(child, None);
                     return Err(NonoError::SandboxInit(format!(
@@ -764,29 +725,27 @@ pub fn execute_supervised(config: &ExecConfig<'_>) -> Result<i32> {
                 }
             }
 
-            // Close write ends, read from pipes, wait for child
-            unsafe {
-                ManuallyDrop::drop(&mut { stdout_write });
-                ManuallyDrop::drop(&mut { stderr_write });
+            // Set up signal forwarding and wait for child.
+            // No output piping needed - child inherits the terminal directly.
+            setup_signal_forwarding(child);
+            let status = wait_for_child(child)?;
+
+            match status {
+                WaitStatus::Exited(_, code) => {
+                    debug!("Supervised child exited with code {}", code);
+                    Ok(code)
+                }
+                WaitStatus::Signaled(_, sig, _) => {
+                    debug!("Supervised child killed by signal {}", sig);
+                    Ok(128 + sig as i32)
+                }
+                other => {
+                    warn!("Unexpected wait status: {:?}", other);
+                    Ok(1)
+                }
             }
-
-            let stdout_read = ManuallyDrop::into_inner(stdout_read);
-            let stderr_read = ManuallyDrop::into_inner(stderr_read);
-
-            let stdout_file = std::fs::File::from(stdout_read);
-            let stderr_file = std::fs::File::from(stderr_read);
-
-            execute_parent_monitor(child, config, stdout_file, stderr_file)
         }
-        Err(e) => {
-            unsafe {
-                ManuallyDrop::drop(&mut { stdout_read });
-                ManuallyDrop::drop(&mut { stdout_write });
-                ManuallyDrop::drop(&mut { stderr_read });
-                ManuallyDrop::drop(&mut { stderr_write });
-            }
-            Err(NonoError::SandboxInit(format!("fork() failed: {}", e)))
-        }
+        Err(e) => Err(NonoError::SandboxInit(format!("fork() failed: {}", e))),
     }
 }
 
@@ -1032,7 +991,7 @@ fn wait_for_child(child: Pid) -> Result<WaitStatus> {
 /// - This is enforced by the single-threaded check in `execute_monitor`
 ///
 /// This is acceptable because:
-/// 1. `execute_monitor` is CLI code, not library code (per DESIGN-diagnostic-and-supervisor.md)
+/// 1. `execute_monitor` is CLI code, not library code (per DESIGN-supervisor.md)
 /// 2. The fork+wait model inherently requires single-threaded execution
 /// 3. Library consumers would use `Sandbox::apply()` directly, not the fork machinery
 fn setup_signal_forwarding(child: Pid) {
