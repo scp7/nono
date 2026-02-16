@@ -1,15 +1,14 @@
 //! Undo subcommand implementations
 //!
-//! Handles `nono undo list|show|restore|audit|verify|cleanup`.
+//! Handles `nono undo list|show|restore|verify|cleanup`.
 
 use crate::cli::{
-    UndoArgs, UndoAuditArgs, UndoCleanupArgs, UndoCommands, UndoListArgs, UndoRestoreArgs,
-    UndoShowArgs, UndoVerifyArgs,
+    UndoArgs, UndoCleanupArgs, UndoCommands, UndoListArgs, UndoRestoreArgs, UndoShowArgs,
+    UndoVerifyArgs,
 };
 use crate::config::user::load_user_config;
 use crate::undo_session::{
-    discover_sessions, format_bytes, load_session, remove_session, total_storage_bytes, undo_root,
-    SessionInfo,
+    discover_sessions, format_bytes, load_session, remove_session, undo_root, SessionInfo,
 };
 use colored::Colorize;
 use nono::undo::{MerkleTree, ObjectStore, SnapshotManager};
@@ -26,7 +25,6 @@ pub fn run_undo(args: UndoArgs) -> Result<()> {
         UndoCommands::List(args) => cmd_list(args),
         UndoCommands::Show(args) => cmd_show(args),
         UndoCommands::Restore(args) => cmd_restore(args),
-        UndoCommands::Audit(args) => cmd_audit(args),
         UndoCommands::Verify(args) => cmd_verify(args),
         UndoCommands::Cleanup(args) => cmd_cleanup(args),
     }
@@ -43,51 +41,111 @@ fn cmd_list(args: UndoListArgs) -> Result<()> {
         sessions.truncate(n);
     }
 
+    // Compute change summary for each session
+    let sessions_with_changes: Vec<_> = sessions
+        .iter()
+        .map(|s| {
+            let changes = get_session_total_changes(s);
+            (s, changes)
+        })
+        .collect();
+
+    // Filter to only sessions with actual changes (unless --all)
+    let filtered: Vec<_> = if args.all {
+        sessions_with_changes
+    } else {
+        sessions_with_changes
+            .into_iter()
+            .filter(|(_, (c, m, d))| *c > 0 || *m > 0 || *d > 0)
+            .collect()
+    };
+
     if args.json {
-        return print_sessions_json(&sessions);
+        return print_sessions_json(&filtered.iter().map(|(s, _)| *s).collect::<Vec<_>>());
     }
 
-    if sessions.is_empty() {
-        eprintln!("{} No undo sessions found.", prefix());
+    if filtered.is_empty() {
+        if args.all {
+            eprintln!("{} No undo sessions found.", prefix());
+        } else {
+            eprintln!(
+                "{} No sessions with file changes. Use --all to see all sessions.",
+                prefix()
+            );
+        }
         return Ok(());
     }
 
-    let total = total_storage_bytes()?;
-    eprintln!(
-        "{} {} session(s), {} total\n",
-        prefix(),
-        sessions.len(),
-        format_bytes(total)
-    );
+    eprintln!("{} {} session(s)\n", prefix(), filtered.len());
 
-    for s in &sessions {
-        let status = session_status_label(s);
-        let cmd = s.metadata.command.join(" ");
-        let snapshots = s.metadata.snapshot_count;
-        let size = format_bytes(s.disk_size);
+    for (s, (created, modified, deleted)) in &filtered {
+        // Show just the first command (program name), not args
+        let cmd_name = s
+            .metadata
+            .command
+            .first()
+            .map(|c| {
+                // Extract just the program name from path
+                std::path::Path::new(c)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| c.clone())
+            })
+            .unwrap_or_else(|| "(unknown)".to_string());
+        let change_summary = format_change_summary(*created, *modified, *deleted);
 
         eprintln!(
-            "  {} {} {} ({} snapshots, {})",
+            "  {}  {}  {}",
             s.metadata.session_id.white().bold(),
-            status,
-            cmd.truecolor(150, 150, 150),
-            snapshots,
-            size.truecolor(150, 150, 150),
+            cmd_name.truecolor(150, 150, 150),
+            change_summary,
         );
-
-        let paths: Vec<String> = s
-            .metadata
-            .tracked_paths
-            .iter()
-            .map(|p| p.display().to_string())
-            .collect();
-        eprintln!("    paths: {}", paths.join(", ").truecolor(100, 100, 100));
     }
 
     Ok(())
 }
 
-fn print_sessions_json(sessions: &[SessionInfo]) -> Result<()> {
+/// Get total changes across all snapshots in a session
+fn get_session_total_changes(s: &SessionInfo) -> (usize, usize, usize) {
+    let mut total_created = 0usize;
+    let mut total_modified = 0usize;
+    let mut total_deleted = 0usize;
+
+    for i in 1..s.metadata.snapshot_count {
+        let changes = SnapshotManager::load_changes_from(&s.dir, i).unwrap_or_default();
+        let (c, m, d) = count_change_types(&changes);
+        total_created = total_created.saturating_add(c);
+        total_modified = total_modified.saturating_add(m);
+        total_deleted = total_deleted.saturating_add(d);
+    }
+
+    (total_created, total_modified, total_deleted)
+}
+
+/// Truncate command for display, adding ... if too long
+/// Format change summary for display
+fn format_change_summary(created: usize, modified: usize, deleted: usize) -> String {
+    let mut parts = Vec::new();
+
+    if created > 0 {
+        let suffix = if created == 1 { "file" } else { "files" };
+        parts.push(format!("+{created} {suffix}"));
+    }
+    if modified > 0 {
+        parts.push(format!("~{modified} modified"));
+    }
+    if deleted > 0 {
+        parts.push(format!("-{deleted} deleted"));
+    }
+
+    if parts.is_empty() {
+        "(no changes)".to_string()
+    } else {
+        parts.join(", ")
+    }
+}
+
+fn print_sessions_json(sessions: &[&SessionInfo]) -> Result<()> {
     let entries: Vec<serde_json::Value> = sessions
         .iter()
         .map(|s| {
@@ -112,16 +170,6 @@ fn print_sessions_json(sessions: &[SessionInfo]) -> Result<()> {
     Ok(())
 }
 
-fn session_status_label(s: &SessionInfo) -> colored::ColoredString {
-    if s.is_alive {
-        "running".green()
-    } else if s.is_stale {
-        "stale".yellow()
-    } else {
-        "completed".truecolor(150, 150, 150)
-    }
-}
-
 // ---------------------------------------------------------------------------
 // nono undo show
 // ---------------------------------------------------------------------------
@@ -133,62 +181,276 @@ fn cmd_show(args: UndoShowArgs) -> Result<()> {
         return print_show_json(&session);
     }
 
-    let status = session_status_label(&session);
+    // Collect all changes from all snapshots
+    let mut all_changes = Vec::new();
+    for i in 1..session.metadata.snapshot_count {
+        let changes = SnapshotManager::load_changes_from(&session.dir, i).unwrap_or_default();
+        all_changes.extend(changes);
+    }
+
+    if all_changes.is_empty() {
+        eprintln!(
+            "{} Session {} has no file changes.",
+            prefix(),
+            args.session_id
+        );
+        return Ok(());
+    }
+
+    let object_store = ObjectStore::new(session.dir.clone())?;
+
     eprintln!(
-        "{} Session: {} {}",
+        "{} Session {} ({})\n",
         prefix(),
         session.metadata.session_id.white().bold(),
-        status
-    );
-    eprintln!(
-        "  Command:  {}",
         session.metadata.command.join(" ").truecolor(150, 150, 150)
     );
-    eprintln!("  Started:  {}", session.metadata.started);
-    if let Some(ref ended) = session.metadata.ended {
-        eprintln!("  Ended:    {ended}");
-    }
-    if let Some(code) = session.metadata.exit_code {
-        eprintln!("  Exit:     {code}");
-    }
-    eprintln!("  Size:     {}", format_bytes(session.disk_size));
 
-    let paths: Vec<String> = session
-        .metadata
-        .tracked_paths
-        .iter()
-        .map(|p| p.display().to_string())
-        .collect();
-    eprintln!("  Paths:    {}", paths.join(", "));
-    eprintln!();
-
-    // Print snapshot timeline
-    for i in 0..session.metadata.snapshot_count {
-        let manifest = match SnapshotManager::load_manifest_from(&session.dir, i) {
-            Ok(m) => m,
-            Err(_) => continue,
-        };
-
-        if i == 0 {
-            eprintln!(
-                "  [{}] Baseline  {} files  {}",
-                format!("{i:03}").white().bold(),
-                manifest.files.len(),
-                manifest.timestamp.truecolor(100, 100, 100)
-            );
-        } else {
-            let changes = SnapshotManager::load_changes_from(&session.dir, i).unwrap_or_default();
-            let (created, modified, deleted) = count_change_types(&changes);
-
-            eprintln!(
-                "  [{}] Snapshot  +{created} ~{modified} -{deleted}  {}",
-                format!("{i:03}").white().bold(),
-                manifest.timestamp.truecolor(100, 100, 100)
-            );
-        }
+    if args.diff {
+        print_unified_diff(&all_changes, &object_store)?;
+    } else if args.side_by_side {
+        print_side_by_side_diff(&all_changes, &object_store)?;
+    } else if args.full {
+        print_full_content(&all_changes, &object_store)?;
+    } else {
+        // Default: summary with line counts
+        print_change_summary(&all_changes, &object_store)?;
     }
 
     Ok(())
+}
+
+/// Print summary of changes with line counts
+fn print_change_summary(changes: &[nono::undo::Change], object_store: &ObjectStore) -> Result<()> {
+    use nono::undo::ChangeType;
+
+    for change in changes {
+        let symbol = change_symbol(&change.change_type);
+        let filename = change
+            .path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| change.path.display().to_string());
+
+        let line_info = match change.change_type {
+            ChangeType::Created => {
+                if let Some(hash) = &change.new_hash {
+                    let content = object_store.retrieve(hash).unwrap_or_default();
+                    let lines = count_lines(&content);
+                    format!("(+{lines} lines)")
+                } else {
+                    String::new()
+                }
+            }
+            ChangeType::Deleted => {
+                if let Some(hash) = &change.old_hash {
+                    let content = object_store.retrieve(hash).unwrap_or_default();
+                    let lines = count_lines(&content);
+                    format!("(-{lines} lines)")
+                } else {
+                    String::new()
+                }
+            }
+            ChangeType::Modified => {
+                let old_lines = change
+                    .old_hash
+                    .as_ref()
+                    .and_then(|h| object_store.retrieve(h).ok())
+                    .map(|c| count_lines(&c))
+                    .unwrap_or(0);
+                let new_lines = change
+                    .new_hash
+                    .as_ref()
+                    .and_then(|h| object_store.retrieve(h).ok())
+                    .map(|c| count_lines(&c))
+                    .unwrap_or(0);
+                let diff = new_lines as i64 - old_lines as i64;
+                if diff >= 0 {
+                    format!("(+{diff} lines)")
+                } else {
+                    format!("({diff} lines)")
+                }
+            }
+            ChangeType::PermissionsChanged => "(permissions)".to_string(),
+        };
+
+        eprintln!(
+            "  {} {:<40} {}",
+            symbol,
+            filename,
+            line_info.truecolor(100, 100, 100)
+        );
+    }
+
+    Ok(())
+}
+
+/// Print unified diff (git diff style)
+fn print_unified_diff(changes: &[nono::undo::Change], object_store: &ObjectStore) -> Result<()> {
+    use nono::undo::ChangeType;
+    use similar::{ChangeTag, TextDiff};
+
+    for change in changes {
+        let path_str = change.path.display().to_string();
+
+        let old_content = change
+            .old_hash
+            .as_ref()
+            .and_then(|h| object_store.retrieve(h).ok())
+            .and_then(|b| String::from_utf8(b).ok())
+            .unwrap_or_default();
+
+        let new_content = change
+            .new_hash
+            .as_ref()
+            .and_then(|h| object_store.retrieve(h).ok())
+            .and_then(|b| String::from_utf8(b).ok())
+            .unwrap_or_default();
+
+        let old_path = match change.change_type {
+            ChangeType::Created => "/dev/null".to_string(),
+            _ => format!("a/{}", path_str),
+        };
+        let new_path = match change.change_type {
+            ChangeType::Deleted => "/dev/null".to_string(),
+            _ => format!("b/{}", path_str),
+        };
+
+        eprintln!("{}", format!("--- {old_path}").red());
+        eprintln!("{}", format!("+++ {new_path}").green());
+
+        let diff = TextDiff::from_lines(&old_content, &new_content);
+        for hunk in diff.unified_diff().context_radius(3).iter_hunks() {
+            eprintln!("{}", format!("{hunk}").cyan());
+            for change_op in hunk.iter_changes() {
+                match change_op.tag() {
+                    ChangeTag::Delete => eprint!("{}", format!("-{}", change_op).red()),
+                    ChangeTag::Insert => eprint!("{}", format!("+{}", change_op).green()),
+                    ChangeTag::Equal => eprint!(" {}", change_op),
+                }
+            }
+        }
+        eprintln!();
+    }
+
+    Ok(())
+}
+
+/// Print side-by-side diff
+fn print_side_by_side_diff(
+    changes: &[nono::undo::Change],
+    object_store: &ObjectStore,
+) -> Result<()> {
+    use similar::{ChangeTag, TextDiff};
+
+    let term_width = 120usize; // reasonable default
+    let col_width = term_width.saturating_sub(3) / 2;
+
+    for change in changes {
+        eprintln!(
+            "{}",
+            format!("=== {} ===", change.path.display()).white().bold()
+        );
+
+        let old_content = change
+            .old_hash
+            .as_ref()
+            .and_then(|h| object_store.retrieve(h).ok())
+            .and_then(|b| String::from_utf8(b).ok())
+            .unwrap_or_default();
+
+        let new_content = change
+            .new_hash
+            .as_ref()
+            .and_then(|h| object_store.retrieve(h).ok())
+            .and_then(|b| String::from_utf8(b).ok())
+            .unwrap_or_default();
+
+        let diff = TextDiff::from_lines(&old_content, &new_content);
+
+        for change_op in diff.iter_all_changes() {
+            let line = change_op.to_string_lossy();
+            let line_trimmed = line.trim_end();
+
+            match change_op.tag() {
+                ChangeTag::Equal => {
+                    let truncated = truncate_str(line_trimmed, col_width);
+                    eprintln!(
+                        "{:<width$} | {:<width$}",
+                        truncated,
+                        truncated,
+                        width = col_width
+                    );
+                }
+                ChangeTag::Delete => {
+                    let truncated = truncate_str(line_trimmed, col_width);
+                    eprintln!("{} < {:<width$}", truncated.red(), "", width = col_width);
+                }
+                ChangeTag::Insert => {
+                    let truncated = truncate_str(line_trimmed, col_width);
+                    eprintln!("{:<width$} > {}", "", truncated.green(), width = col_width);
+                }
+            }
+        }
+        eprintln!();
+    }
+
+    Ok(())
+}
+
+/// Print full file content from snapshot
+fn print_full_content(changes: &[nono::undo::Change], object_store: &ObjectStore) -> Result<()> {
+    use nono::undo::ChangeType;
+
+    for change in changes {
+        let symbol = change_symbol(&change.change_type);
+        eprintln!(
+            "{} {} {}",
+            symbol,
+            change.path.display().to_string().white().bold(),
+            format!("({})", change.change_type).truecolor(100, 100, 100)
+        );
+
+        let content_hash = match change.change_type {
+            ChangeType::Deleted => change.old_hash.as_ref(),
+            _ => change.new_hash.as_ref(),
+        };
+
+        if let Some(hash) = content_hash {
+            if let Ok(content) = object_store.retrieve(hash) {
+                if let Ok(text) = String::from_utf8(content) {
+                    for (i, line) in text.lines().enumerate() {
+                        eprintln!(
+                            "  {} {}",
+                            format!("{:4}", i + 1).truecolor(100, 100, 100),
+                            line
+                        );
+                    }
+                } else {
+                    eprintln!("  (binary file)");
+                }
+            }
+        }
+        eprintln!();
+    }
+
+    Ok(())
+}
+
+fn count_lines(content: &[u8]) -> usize {
+    content
+        .iter()
+        .filter(|&&b| b == b'\n')
+        .count()
+        .saturating_add(1)
+}
+
+fn truncate_str(s: &str, max_len: usize) -> String {
+    if s.len() <= max_len {
+        s.to_string()
+    } else {
+        format!("{}...", &s[..max_len.saturating_sub(3)])
+    }
 }
 
 fn print_show_json(session: &SessionInfo) -> Result<()> {
@@ -240,14 +502,19 @@ fn print_show_json(session: &SessionInfo) -> Result<()> {
 fn cmd_restore(args: UndoRestoreArgs) -> Result<()> {
     let session = load_session(&args.session_id)?;
 
-    if args.snapshot >= session.metadata.snapshot_count {
+    // Default to the last snapshot (final state), not baseline
+    let snapshot = args
+        .snapshot
+        .unwrap_or_else(|| session.metadata.snapshot_count.saturating_sub(1));
+
+    if snapshot >= session.metadata.snapshot_count {
         return Err(NonoError::Snapshot(format!(
             "Snapshot {} does not exist (session has {} snapshots)",
-            args.snapshot, session.metadata.snapshot_count
+            snapshot, session.metadata.snapshot_count
         )));
     }
 
-    let manifest = SnapshotManager::load_manifest_from(&session.dir, args.snapshot)?;
+    let manifest = SnapshotManager::load_manifest_from(&session.dir, snapshot)?;
 
     // For restore we need to construct a SnapshotManager with the tracked paths
     // and a minimal exclusion filter (we're restoring, not snapshotting)
@@ -283,7 +550,7 @@ fn cmd_restore(args: UndoRestoreArgs) -> Result<()> {
         eprintln!(
             "{} Dry run: restoring to snapshot {} would apply {} change(s):\n",
             prefix(),
-            args.snapshot,
+            snapshot,
             diff.len()
         );
         print_changes(&diff);
@@ -299,114 +566,11 @@ fn cmd_restore(args: UndoRestoreArgs) -> Result<()> {
             "{} Restored {} file(s) to snapshot {}.",
             prefix(),
             applied.len(),
-            args.snapshot
+            snapshot
         );
         print_changes(&applied);
     }
 
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// nono undo audit
-// ---------------------------------------------------------------------------
-
-fn cmd_audit(args: UndoAuditArgs) -> Result<()> {
-    let session = load_session(&args.session_id)?;
-
-    if args.json {
-        return print_audit_json(&session);
-    }
-
-    eprintln!(
-        "{} Audit trail for session: {}",
-        prefix(),
-        session.metadata.session_id.white().bold()
-    );
-    eprintln!(
-        "  Command:  {}",
-        session.metadata.command.join(" ").truecolor(150, 150, 150)
-    );
-    eprintln!("  Started:  {}", session.metadata.started);
-    if let Some(ref ended) = session.metadata.ended {
-        eprintln!("  Ended:    {ended}");
-    }
-    if let Some(code) = session.metadata.exit_code {
-        eprintln!("  Exit:     {code}");
-    }
-    eprintln!();
-
-    for i in 0..session.metadata.snapshot_count {
-        let manifest = match SnapshotManager::load_manifest_from(&session.dir, i) {
-            Ok(m) => m,
-            Err(_) => continue,
-        };
-
-        if i == 0 {
-            eprintln!(
-                "  [{}] Baseline at {}  ({} files, root: {})",
-                format!("{i:03}").white().bold(),
-                manifest.timestamp,
-                manifest.files.len(),
-                &manifest.merkle_root.to_string()[..16],
-            );
-        } else {
-            let changes = SnapshotManager::load_changes_from(&session.dir, i).unwrap_or_default();
-            eprintln!(
-                "  [{}] Snapshot at {}  (root: {})",
-                format!("{i:03}").white().bold(),
-                manifest.timestamp,
-                &manifest.merkle_root.to_string()[..16],
-            );
-
-            for change in &changes {
-                let symbol = change_symbol(&change.change_type);
-                eprintln!("        {} {}", symbol, change.path.display());
-            }
-        }
-    }
-
-    Ok(())
-}
-
-fn print_audit_json(session: &SessionInfo) -> Result<()> {
-    let mut snapshots = Vec::new();
-    for i in 0..session.metadata.snapshot_count {
-        let manifest = match SnapshotManager::load_manifest_from(&session.dir, i) {
-            Ok(m) => m,
-            Err(_) => continue,
-        };
-        let changes = SnapshotManager::load_changes_from(&session.dir, i).unwrap_or_default();
-
-        snapshots.push(serde_json::json!({
-            "number": manifest.number,
-            "timestamp": manifest.timestamp,
-            "file_count": manifest.files.len(),
-            "merkle_root": manifest.merkle_root.to_string(),
-            "changes": changes.iter().map(|c| serde_json::json!({
-                "path": c.path.display().to_string(),
-                "type": format!("{}", c.change_type),
-                "size_delta": c.size_delta,
-                "old_hash": c.old_hash.map(|h| h.to_string()),
-                "new_hash": c.new_hash.map(|h| h.to_string()),
-            })).collect::<Vec<_>>(),
-        }));
-    }
-
-    let output = serde_json::json!({
-        "session_id": session.metadata.session_id,
-        "started": session.metadata.started,
-        "ended": session.metadata.ended,
-        "command": session.metadata.command,
-        "tracked_paths": session.metadata.tracked_paths,
-        "exit_code": session.metadata.exit_code,
-        "merkle_roots": session.metadata.merkle_roots.iter().map(|r| r.to_string()).collect::<Vec<_>>(),
-        "snapshots": snapshots,
-    });
-
-    let json = serde_json::to_string_pretty(&output)
-        .map_err(|e| NonoError::Snapshot(format!("JSON serialization failed: {e}")))?;
-    println!("{json}");
     Ok(())
 }
 
@@ -542,25 +706,25 @@ fn cmd_cleanup(args: UndoCleanupArgs) -> Result<()> {
             .as_secs();
 
         for s in &sessions {
-            if let Ok(started) = s.metadata.started.parse::<u64>() {
+            if let Some(started) = parse_session_start_time(s) {
                 if now.saturating_sub(started) > cutoff_secs && !s.is_alive {
                     to_remove.push(s);
                 }
             }
         }
     } else {
-        // Default: remove stale sessions + enforce keep limit
-        let stale_grace_secs = config.undo.stale_grace_hours.saturating_mul(3600);
+        // Default: remove orphaned sessions + enforce keep limit
+        let orphan_grace_secs = config.undo.stale_grace_hours.saturating_mul(3600);
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
 
-        // Stale sessions (ended is None, PID dead)
+        // Orphaned sessions (process crashed/killed before clean exit)
         for s in &sessions {
             if s.is_stale {
-                if let Ok(started) = s.metadata.started.parse::<u64>() {
-                    if now.saturating_sub(started) > stale_grace_secs {
+                if let Some(started) = parse_session_start_time(s) {
+                    if now.saturating_sub(started) > orphan_grace_secs {
                         to_remove.push(s);
                     }
                 }
@@ -692,6 +856,15 @@ fn cleanup_all(dry_run: bool) -> Result<()> {
 // ---------------------------------------------------------------------------
 // Shared helpers
 // ---------------------------------------------------------------------------
+
+/// Parse session start time from either RFC3339 or epoch seconds format
+fn parse_session_start_time(s: &SessionInfo) -> Option<u64> {
+    // Try parsing as RFC3339 timestamp first, then as epoch seconds
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(&s.metadata.started) {
+        return Some(dt.timestamp() as u64);
+    }
+    s.metadata.started.parse::<u64>().ok()
+}
 
 fn count_change_types(changes: &[nono::undo::Change]) -> (usize, usize, usize) {
     let mut created = 0usize;

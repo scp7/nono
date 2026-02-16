@@ -20,7 +20,7 @@
     "links": [
       {
         "label": "GitHub",
-        "href": "https://github.com/lukehinds/nono"
+        "href": "https://github.com/always-further/nono"
       }
     ],
     "primary": {
@@ -89,7 +89,7 @@
   },
   "footer": {
     "socials": {
-      "github": "https://github.com/lukehinds/nono",
+      "github": "https://github.com/always-further/nono",
       "discord": "https://discord.gg/pPcjYzGvbS"
     }
   }

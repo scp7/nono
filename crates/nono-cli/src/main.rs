@@ -2,6 +2,7 @@
 //!
 //! This is the CLI binary that uses the nono library for OS-level sandboxing.
 
+mod audit_commands;
 mod capability_ext;
 mod cli;
 mod config;
@@ -69,6 +70,7 @@ fn run() -> Result<()> {
         Commands::Why(args) => run_why(*args),
         Commands::Setup(args) => run_setup(args),
         Commands::Undo(args) => undo_commands::run_undo(args),
+        Commands::Audit(args) => audit_commands::run_audit(args),
     }
 }
 

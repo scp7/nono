@@ -124,30 +124,49 @@ pub enum Commands {
 ")]
     Setup(SetupArgs),
 
-    /// Manage undo sessions (browse, restore, audit, cleanup)
+    /// Manage undo sessions (browse, restore, cleanup)
     #[command(after_help = "EXAMPLES:
-    # List all undo sessions
+    # List sessions with file changes
     nono undo list
 
-    # Show details of a specific session
-    nono undo show 20260214-143022-12345
+    # Show changes in a session (with diff)
+    nono undo show 20260214-143022-12345 --diff
 
-    # Restore files from a session's baseline snapshot
+    # Restore files from a session
     nono undo restore 20260214-143022-12345
 
     # Dry-run restore to see what would change
     nono undo restore 20260214-143022-12345 --dry-run
 
-    # Export audit trail as JSON
-    nono undo audit 20260214-143022-12345 --json
-
     # Verify session integrity
     nono undo verify 20260214-143022-12345
 
-    # Clean up stale sessions (dry-run first)
+    # Clean up old sessions (dry-run first)
     nono undo cleanup --dry-run
 ")]
     Undo(UndoArgs),
+
+    /// View audit trail of sandboxed commands
+    #[command(after_help = "EXAMPLES:
+    # List all sessions (including read-only commands)
+    nono audit list
+
+    # List sessions from today
+    nono audit list --today
+
+    # Filter by command
+    nono audit list --command claude
+
+    # Filter by path
+    nono audit list --path ~/projects
+
+    # Show audit details for a session
+    nono audit show 20260214-143022-12345
+
+    # Export as JSON
+    nono audit show 20260214-143022-12345 --json
+")]
+    Audit(AuditArgs),
 }
 
 #[derive(Parser, Debug, Clone)]
@@ -405,25 +424,29 @@ pub struct UndoArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum UndoCommands {
-    /// List past undo sessions
+    /// List sessions with file changes
     List(UndoListArgs),
-    /// Show details of a specific session
+    /// Show changes in a session
     Show(UndoShowArgs),
     /// Restore files from a past session
     Restore(UndoRestoreArgs),
-    /// Export session audit trail
-    Audit(UndoAuditArgs),
     /// Verify session integrity
     Verify(UndoVerifyArgs),
     /// Clean up old sessions
     Cleanup(UndoCleanupArgs),
 }
 
+// Note: UndoAuditArgs has been moved to AuditShowArgs under `nono audit show`
+
 #[derive(Parser, Debug)]
 pub struct UndoListArgs {
     /// Show only the N most recent sessions
     #[arg(long, value_name = "N")]
     pub recent: Option<usize>,
+
+    /// Show all sessions (including those with no file changes)
+    #[arg(long)]
+    pub all: bool,
 
     /// Output as JSON
     #[arg(long)]
@@ -435,6 +458,18 @@ pub struct UndoShowArgs {
     /// Session ID (e.g., 20260214-143022-12345)
     pub session_id: String,
 
+    /// Show unified diff (git diff style)
+    #[arg(long)]
+    pub diff: bool,
+
+    /// Show side-by-side diff
+    #[arg(long)]
+    pub side_by_side: bool,
+
+    /// Show full file content from snapshot
+    #[arg(long)]
+    pub full: bool,
+
     /// Output as JSON
     #[arg(long)]
     pub json: bool,
@@ -445,23 +480,13 @@ pub struct UndoRestoreArgs {
     /// Session ID (e.g., 20260214-143022-12345)
     pub session_id: String,
 
-    /// Snapshot number to restore to (default: 0 = baseline)
-    #[arg(long, default_value = "0")]
-    pub snapshot: u32,
+    /// Snapshot number to restore to (default: last snapshot)
+    #[arg(long)]
+    pub snapshot: Option<u32>,
 
     /// Show what would change without modifying files
     #[arg(long)]
     pub dry_run: bool,
-}
-
-#[derive(Parser, Debug)]
-pub struct UndoAuditArgs {
-    /// Session ID (e.g., 20260214-143022-12345)
-    pub session_id: String,
-
-    /// Output as JSON
-    #[arg(long)]
-    pub json: bool,
 }
 
 #[derive(Parser, Debug)]
@@ -487,6 +512,65 @@ pub struct UndoCleanupArgs {
     /// Remove all sessions (requires confirmation)
     #[arg(long)]
     pub all: bool,
+}
+
+// ---------------------------------------------------------------------------
+// Audit command args
+// ---------------------------------------------------------------------------
+
+#[derive(Parser, Debug)]
+pub struct AuditArgs {
+    #[command(subcommand)]
+    pub command: AuditCommands,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum AuditCommands {
+    /// List all sandboxed sessions
+    List(AuditListArgs),
+    /// Show audit details for a session
+    Show(AuditShowArgs),
+}
+
+#[derive(Parser, Debug)]
+pub struct AuditListArgs {
+    /// Show only sessions from today
+    #[arg(long)]
+    pub today: bool,
+
+    /// Show sessions since date (YYYY-MM-DD)
+    #[arg(long, value_name = "DATE")]
+    pub since: Option<String>,
+
+    /// Show sessions until date (YYYY-MM-DD)
+    #[arg(long, value_name = "DATE")]
+    pub until: Option<String>,
+
+    /// Filter by command name (e.g., claude, cat)
+    #[arg(long, value_name = "CMD")]
+    pub command: Option<String>,
+
+    /// Filter by tracked path
+    #[arg(long, value_name = "PATH")]
+    pub path: Option<PathBuf>,
+
+    /// Show only the N most recent sessions
+    #[arg(long, value_name = "N")]
+    pub recent: Option<usize>,
+
+    /// Output as JSON
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Parser, Debug)]
+pub struct AuditShowArgs {
+    /// Session ID (e.g., 20260214-143022-12345)
+    pub session_id: String,
+
+    /// Output as JSON
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[cfg(test)]
@@ -635,7 +719,7 @@ mod tests {
             Commands::Undo(args) => match args.command {
                 UndoCommands::Restore(restore_args) => {
                     assert_eq!(restore_args.session_id, "20260214-143022-12345");
-                    assert_eq!(restore_args.snapshot, 0);
+                    assert_eq!(restore_args.snapshot, None); // Default to last snapshot
                     assert!(!restore_args.dry_run);
                 }
                 _ => panic!("Expected Restore subcommand"),
@@ -658,7 +742,7 @@ mod tests {
         match cli.command {
             Commands::Undo(args) => match args.command {
                 UndoCommands::Restore(restore_args) => {
-                    assert_eq!(restore_args.snapshot, 3);
+                    assert_eq!(restore_args.snapshot, Some(3));
                     assert!(restore_args.dry_run);
                 }
                 _ => panic!("Expected Restore subcommand"),
@@ -668,17 +752,32 @@ mod tests {
     }
 
     #[test]
-    fn test_undo_audit() {
-        let cli = Cli::parse_from(["nono", "undo", "audit", "20260214-143022-12345", "--json"]);
+    fn test_audit_list() {
+        let cli = Cli::parse_from(["nono", "audit", "list", "--today"]);
         match cli.command {
-            Commands::Undo(args) => match args.command {
-                UndoCommands::Audit(audit_args) => {
-                    assert_eq!(audit_args.session_id, "20260214-143022-12345");
-                    assert!(audit_args.json);
+            Commands::Audit(args) => match args.command {
+                AuditCommands::List(list_args) => {
+                    assert!(list_args.today);
+                    assert!(!list_args.json);
                 }
-                _ => panic!("Expected Audit subcommand"),
+                _ => panic!("Expected List subcommand"),
             },
-            _ => panic!("Expected Undo command"),
+            _ => panic!("Expected Audit command"),
+        }
+    }
+
+    #[test]
+    fn test_audit_show() {
+        let cli = Cli::parse_from(["nono", "audit", "show", "20260214-143022-12345", "--json"]);
+        match cli.command {
+            Commands::Audit(args) => match args.command {
+                AuditCommands::Show(show_args) => {
+                    assert_eq!(show_args.session_id, "20260214-143022-12345");
+                    assert!(show_args.json);
+                }
+                _ => panic!("Expected Show subcommand"),
+            },
+            _ => panic!("Expected Audit command"),
         }
     }
 

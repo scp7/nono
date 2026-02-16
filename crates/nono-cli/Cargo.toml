@@ -17,6 +17,7 @@ path = "src/main.rs"
 nono = { version = "0.1", path = "../nono" }
 clap = { version = "4", features = ["derive"] }
 colored = "3"
+similar = "2"
 rand = "0.10"
 which = "8"
 toml = "1.0"
