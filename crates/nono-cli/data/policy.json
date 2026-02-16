@@ -306,11 +306,9 @@
       "allow": {
         "read": [
           "~/.local/bin",
-          "~/.local/share/applications",
-          "~/.local/share/icons",
-          "~/.local/share/fonts",
-          "~/.local/share/man",
-          "~/.local/share/mime",
+          "~/.local/share"
+        ],
+        "readwrite": [
           "~/.local/state"
         ]
       }
@@ -323,6 +321,7 @@
           "~/.fnm",
           "~/.npm",
           "~/.node",
+          "~/.local/share/fnm",
           "/usr/local/lib/node_modules"
         ]
       }

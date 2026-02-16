@@ -80,9 +80,6 @@ pub enum NonoError {
     #[error("Profile parse error: {0}")]
     ProfileParse(String),
 
-    #[error("Unsigned profile '{0}' requires --trust-unsigned flag")]
-    UnsignedProfile(String),
-
     #[error("Home directory not found")]
     HomeNotFound,
 

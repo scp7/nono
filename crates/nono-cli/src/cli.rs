@@ -219,10 +219,6 @@ pub struct SandboxArgs {
     #[arg(long, value_name = "DIR")]
     pub workdir: Option<PathBuf>,
 
-    /// Trust unsigned user profiles (required for profiles without signatures)
-    #[arg(long)]
-    pub trust_unsigned: bool,
-
     /// Configuration file path
     #[arg(long, short = 'c', value_name = "FILE")]
     pub config: Option<PathBuf>,
@@ -360,10 +356,6 @@ pub struct WhyArgs {
     /// Working directory for $WORKDIR expansion in profiles
     #[arg(long, value_name = "DIR")]
     pub workdir: Option<PathBuf>,
-
-    /// Trust unsigned user profiles
-    #[arg(long)]
-    pub trust_unsigned: bool,
 }
 
 #[derive(Parser, Debug)]
@@ -383,10 +375,6 @@ pub struct LearnArgs {
     /// Show all accessed paths, not just those that would be blocked
     #[arg(long)]
     pub all: bool,
-
-    /// Trust unsigned user profiles
-    #[arg(long)]
-    pub trust_unsigned: bool,
 
     /// Enable verbose output
     #[arg(long, short = 'v', action = clap::ArgAction::Count)]

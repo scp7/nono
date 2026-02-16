@@ -327,7 +327,6 @@ mod tests {
             profile: None,
             allow_cwd: false,
             workdir: None,
-            trust_unsigned: false,
             config: None,
             verbose: 0,
             dry_run: false,
@@ -354,7 +353,6 @@ mod tests {
             profile: None,
             allow_cwd: false,
             workdir: None,
-            trust_unsigned: false,
             config: None,
             verbose: 0,
             dry_run: false,
@@ -380,7 +378,6 @@ mod tests {
             profile: None,
             allow_cwd: false,
             workdir: None,
-            trust_unsigned: false,
             config: None,
             verbose: 0,
             dry_run: false,
@@ -393,7 +390,7 @@ mod tests {
 
     #[test]
     fn test_from_profile_with_groups() {
-        let profile = crate::profile::load_profile("claude-code", false)
+        let profile = crate::profile::load_profile("claude-code")
             .expect("Failed to load claude-code profile");
 
         let workdir = tempdir().expect("Failed to create temp dir");
@@ -411,7 +408,6 @@ mod tests {
             profile: None,
             allow_cwd: false,
             workdir: None,
-            trust_unsigned: false,
             config: None,
             verbose: 0,
             dry_run: false,
