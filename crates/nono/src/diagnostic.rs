@@ -138,8 +138,27 @@ impl<'a> DiagnosticFormatter<'a> {
         ));
         lines.push("[nono]".to_string());
 
-        if self.denials.is_empty() {
-            // No denials recorded -- failure might be unrelated
+        if self.denials.is_empty() && !self.caps.extensions_enabled() {
+            // No denials and no capability expansion (macOS supervised mode).
+            // Seatbelt blocks at the kernel level without notifying the supervisor,
+            // so we fall back to the standard policy summary with re-run suggestions.
+            lines.push("[nono] Sandbox policy:".to_string());
+            self.format_allowed_paths_concise(&mut lines);
+            self.format_network_status(&mut lines);
+            lines.push("[nono]".to_string());
+            lines.push("[nono] To grant additional access, re-run with:".to_string());
+            lines.push("[nono]   --allow <path>     read+write access to directory".to_string());
+            lines.push("[nono]   --read <path>      read-only access to directory".to_string());
+            lines.push("[nono]   --write <path>     write-only access to directory".to_string());
+            if self.caps.is_network_blocked() {
+                lines.push(
+                    "[nono]   --allow-net        network access (remove --net-block)".to_string(),
+                );
+            }
+            return lines.join("\n");
+        } else if self.denials.is_empty() {
+            // No denials but expansion is active (Linux supervised mode).
+            // seccomp-notify would have caught any denial, so this is genuine.
             lines.push("[nono] No access requests were denied during this session.".to_string());
             lines.push("[nono] The failure may be unrelated to sandbox restrictions.".to_string());
         } else {
@@ -531,14 +550,29 @@ mod tests {
     // --- Supervised mode tests ---
 
     #[test]
-    fn test_supervised_no_denials() {
-        let caps = make_test_caps();
+    fn test_supervised_no_denials_no_extensions() {
+        // macOS supervised mode: no capability expansion, Seatbelt blocks silently.
+        // Should fall back to policy summary + --allow suggestions.
+        let caps = make_test_caps(); // extensions_enabled defaults to false
+        let formatter = DiagnosticFormatter::new(&caps).with_mode(DiagnosticMode::Supervised);
+        let output = formatter.format_footer(1);
+
+        assert!(output.contains("Sandbox policy:"));
+        assert!(output.contains("--allow <path>"));
+        assert!(!output.contains("No access requests were denied"));
+    }
+
+    #[test]
+    fn test_supervised_no_denials_extensions_active() {
+        // Linux supervised mode: seccomp-notify is active, empty denials means
+        // nothing was actually blocked.
+        let mut caps = make_test_caps();
+        caps.set_extensions_enabled(true);
         let formatter = DiagnosticFormatter::new(&caps).with_mode(DiagnosticMode::Supervised);
         let output = formatter.format_footer(1);
 
         assert!(output.contains("No access requests were denied"));
         assert!(output.contains("may be unrelated"));
-        // Should NOT suggest --allow re-run
         assert!(!output.contains("--allow <path>"));
     }
 

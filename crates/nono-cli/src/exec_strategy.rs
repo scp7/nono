@@ -843,28 +843,12 @@ pub fn execute_supervised(
             // No output piping needed - child inherits the terminal directly.
             setup_signal_forwarding(child);
 
-            // Validate supervisor socket peer is our child (L3 review finding).
-            // This ensures no other process has connected to our socket pair.
-            if let Some(ref sup_sock) = supervisor_sock {
-                match sup_sock.peer_pid() {
-                    Ok(peer) => {
-                        let expected = child.as_raw() as u32;
-                        if peer != expected {
-                            let _ = signal::kill(child, Signal::SIGKILL);
-                            let _ = waitpid(child, None);
-                            return Err(NonoError::SandboxInit(format!(
-                                "Supervisor socket peer PID mismatch: expected {} but got {}. \
-                                 Aborting: possible socket hijack.",
-                                expected, peer
-                            )));
-                        }
-                        debug!("Supervisor socket peer validated: PID {}", peer);
-                    }
-                    Err(e) => {
-                        warn!("Could not verify supervisor socket peer PID: {}", e);
-                    }
-                }
-            }
+            // NOTE: peer_pid() is NOT called here. For socketpair() created
+            // before fork, LOCAL_PEERPID/SO_PEERCRED return the parent's own PID
+            // (credentials are captured at creation time, not updated after fork).
+            // Socketpairs are inherently secure: anonymous (no filesystem path),
+            // only our forked child has the other end. peer_pid() is useful for
+            // named sockets (bind/connect), not socketpair+fork.
 
             // Build initial-set path lookup for seccomp fast-path (Linux)
             #[cfg(target_os = "linux")]

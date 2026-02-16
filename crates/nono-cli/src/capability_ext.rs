@@ -36,24 +36,34 @@ fn try_new_file(path: &Path, access: AccessMode, label: &str) -> Result<Option<F
     }
 }
 
-/// Extension trait for CapabilitySet to add CLI-specific construction methods
+/// Extension trait for CapabilitySet to add CLI-specific construction methods.
+///
+/// Both methods return `(CapabilitySet, bool)` where the bool indicates whether
+/// `policy::apply_unlink_overrides()` must be called after all writable paths
+/// are finalized (including CWD). The caller is responsible for calling it.
 pub trait CapabilitySetExt {
-    /// Create a capability set from CLI sandbox arguments
-    fn from_args(args: &SandboxArgs) -> Result<CapabilitySet>;
+    /// Create a capability set from CLI sandbox arguments.
+    /// Returns `(caps, needs_unlink_overrides)`.
+    fn from_args(args: &SandboxArgs) -> Result<(CapabilitySet, bool)>;
 
-    /// Create a capability set from a profile with CLI overrides
-    fn from_profile(profile: &Profile, workdir: &Path, args: &SandboxArgs)
-        -> Result<CapabilitySet>;
+    /// Create a capability set from a profile with CLI overrides.
+    /// Returns `(caps, needs_unlink_overrides)`.
+    fn from_profile(
+        profile: &Profile,
+        workdir: &Path,
+        args: &SandboxArgs,
+    ) -> Result<(CapabilitySet, bool)>;
 }
 
 impl CapabilitySetExt for CapabilitySet {
-    fn from_args(args: &SandboxArgs) -> Result<CapabilitySet> {
+    fn from_args(args: &SandboxArgs) -> Result<(CapabilitySet, bool)> {
         let mut caps = CapabilitySet::new();
 
         // Resolve base policy groups (system paths, deny rules, dangerous commands)
         let loaded_policy = policy::load_embedded_policy()?;
         let base = policy::base_groups()?;
         let resolved = policy::resolve_groups(&loaded_policy, &base, &mut caps)?;
+        let needs_unlink_overrides = resolved.needs_unlink_overrides;
 
         // Directory permissions (canonicalize handles existence check atomically)
         for path in &args.allow {
@@ -112,25 +122,22 @@ impl CapabilitySetExt for CapabilitySet {
             caps.add_blocked_command(cmd.clone());
         }
 
-        // Apply deferred unlink overrides if any deny groups requested them
-        if resolved.needs_unlink_overrides {
-            policy::apply_unlink_overrides(&mut caps);
-        }
-
         // Validate deny/allow overlaps (warns on Linux where Landlock can't enforce denies)
         policy::validate_deny_overlaps(&resolved.deny_paths, &caps);
 
         // Deduplicate capabilities
         caps.deduplicate();
 
-        Ok(caps)
+        // Caller must call apply_unlink_overrides() after CWD and any other
+        // writable paths are added, if needs_unlink_overrides is true.
+        Ok((caps, needs_unlink_overrides))
     }
 
     fn from_profile(
         profile: &Profile,
         workdir: &Path,
         args: &SandboxArgs,
-    ) -> Result<CapabilitySet> {
+    ) -> Result<(CapabilitySet, bool)> {
         let mut caps = CapabilitySet::new();
 
         // Resolve policy groups from profile
@@ -219,19 +226,15 @@ impl CapabilitySetExt for CapabilitySet {
         // Apply CLI overrides (CLI args take precedence)
         add_cli_overrides(&mut caps, args)?;
 
-        // Apply deferred unlink overrides now that ALL writable paths are in place
-        // (groups + profile [filesystem] + CLI overrides + CWD).
-        if needs_unlink_overrides {
-            policy::apply_unlink_overrides(&mut caps);
-        }
-
         // Validate deny/allow overlaps (warns on Linux where Landlock can't enforce denies)
         policy::validate_deny_overlaps(&resolved.deny_paths, &caps);
 
         // Deduplicate capabilities
         caps.deduplicate();
 
-        Ok(caps)
+        // Caller must call apply_unlink_overrides() after CWD and any other
+        // writable paths are added, if needs_unlink_overrides is true.
+        Ok((caps, needs_unlink_overrides))
     }
 }
 
@@ -330,7 +333,7 @@ mod tests {
             dry_run: false,
         };
 
-        let caps = CapabilitySet::from_args(&args).expect("Failed to build caps");
+        let (caps, _) = CapabilitySet::from_args(&args).expect("Failed to build caps");
         assert!(caps.has_fs());
         assert!(!caps.is_network_blocked());
     }
@@ -357,7 +360,7 @@ mod tests {
             dry_run: false,
         };
 
-        let caps = CapabilitySet::from_args(&args).expect("Failed to build caps");
+        let (caps, _) = CapabilitySet::from_args(&args).expect("Failed to build caps");
         assert!(caps.is_network_blocked());
     }
 
@@ -383,7 +386,7 @@ mod tests {
             dry_run: false,
         };
 
-        let caps = CapabilitySet::from_args(&args).expect("Failed to build caps");
+        let (caps, _) = CapabilitySet::from_args(&args).expect("Failed to build caps");
         assert!(caps.allowed_commands().contains(&"rm".to_string()));
         assert!(caps.blocked_commands().contains(&"custom".to_string()));
     }
@@ -414,8 +417,13 @@ mod tests {
             dry_run: false,
         };
 
-        let caps =
+        let (mut caps, needs_unlink_overrides) =
             CapabilitySet::from_profile(&profile, workdir.path(), &args).expect("Failed to build");
+
+        // Simulate what main.rs does: apply unlink overrides after all paths finalized
+        if needs_unlink_overrides {
+            policy::apply_unlink_overrides(&mut caps);
+        }
 
         // Groups should have populated filesystem capabilities
         assert!(caps.has_fs());

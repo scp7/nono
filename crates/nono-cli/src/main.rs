@@ -180,7 +180,11 @@ fn run_why(args: WhyArgs) -> Result<()> {
             dry_run: false,
         };
 
-        CapabilitySet::from_profile(&prof, &workdir, &sandbox_args)?
+        let (mut caps, needs_unlink) = CapabilitySet::from_profile(&prof, &workdir, &sandbox_args)?;
+        if needs_unlink {
+            crate::policy::apply_unlink_overrides(&mut caps);
+        }
+        caps
     } else {
         // Build from CLI args
         let sandbox_args = SandboxArgs {
@@ -203,7 +207,11 @@ fn run_why(args: WhyArgs) -> Result<()> {
             dry_run: false,
         };
 
-        CapabilitySet::from_args(&sandbox_args)?
+        let (mut caps, needs_unlink) = CapabilitySet::from_args(&sandbox_args)?;
+        if needs_unlink {
+            crate::policy::apply_unlink_overrides(&mut caps);
+        }
+        caps
     };
 
     // Execute the query
@@ -751,8 +759,9 @@ fn prepare_sandbox(args: &SandboxArgs, silent: bool) -> Result<PreparedSandbox> 
         .map(|p| p.undo.exclude_globs.clone())
         .unwrap_or_default();
 
-    // Build capabilities from profile or arguments
-    let mut caps = if let Some(ref prof) = loaded_profile {
+    // Build capabilities from profile or arguments.
+    // Unlink overrides are deferred so they can cover the CWD path added below.
+    let (mut caps, needs_unlink_overrides) = if let Some(ref prof) = loaded_profile {
         CapabilitySet::from_profile(prof, &workdir, args)?
     } else {
         CapabilitySet::from_args(args)?
@@ -803,6 +812,12 @@ fn prepare_sandbox(args: &SandboxArgs, silent: bool) -> Result<PreparedSandbox> 
             }
             caps.deduplicate();
         }
+    }
+
+    // Apply deferred unlink overrides now that ALL writable paths are finalized
+    // (groups + profile [filesystem] + CLI overrides + CWD).
+    if needs_unlink_overrides {
+        crate::policy::apply_unlink_overrides(&mut caps);
     }
 
     // Check if any capabilities are specified

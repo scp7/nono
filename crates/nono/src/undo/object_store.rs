@@ -316,7 +316,7 @@ impl ObjectStore {
 /// falling back to timestamp-based entropy.
 pub(super) fn random_u32() -> u32 {
     let mut buf = [0u8; 4];
-    if getrandom::getrandom(&mut buf).is_ok() {
+    if getrandom::fill(&mut buf).is_ok() {
         u32::from_ne_bytes(buf)
     } else {
         // Fallback: use timestamp + PID for some entropy

@@ -2,7 +2,7 @@
 
 use colored::Colorize;
 use nono::{AccessMode, CapabilitySet, NonoError, Result};
-use rand::seq::SliceRandom;
+use rand::prelude::IndexedRandom;
 use std::ffi::{OsStr, OsString};
 use std::io::{BufRead, IsTerminal, Write};
 use std::path::Path;
@@ -28,7 +28,7 @@ pub fn print_banner(silent: bool) {
     }
 
     let quote = QUOTES
-        .choose(&mut rand::thread_rng())
+        .choose(&mut rand::rng())
         .unwrap_or(&"The opposite of yolo");
 
     let version = env!("CARGO_PKG_VERSION");
