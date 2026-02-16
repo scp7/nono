@@ -283,8 +283,6 @@ fn run_sandbox(
     // Enable sandbox extensions for transparent capability expansion in supervised mode.
     // On Linux, seccomp-notify intercepts syscalls at the kernel level -- this flag is
     // informational only (seccomp is installed separately in the child process).
-    // On macOS, extensions_enabled controls SBPL extension filter rules. Currently
-    // disabled because the DYLD interposition shim is not yet stable on arm64.
     #[cfg(target_os = "linux")]
     if supervised {
         prepared.caps.set_extensions_enabled(true);

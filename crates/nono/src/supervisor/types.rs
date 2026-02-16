@@ -80,15 +80,6 @@ pub struct AuditEntry {
 pub enum SupervisorMessage {
     /// A capability expansion request (explicit, from SDK clients)
     Request(CapabilityRequest),
-    /// A request from the DYLD shim on macOS when an interposed file operation
-    /// encounters EPERM. The shim sends only the path and access mode -- no PID
-    /// (the supervisor uses the fork PID and validates via peer_pid).
-    ShimRequest {
-        /// The filesystem path that was denied
-        path: PathBuf,
-        /// The access mode the operation needed
-        access: AccessMode,
-    },
 }
 
 /// IPC message envelope sent from supervisor to child.
@@ -100,16 +91,5 @@ pub enum SupervisorResponse {
         request_id: String,
         /// The approval decision
         decision: ApprovalDecision,
-    },
-    /// A sandbox extension token for macOS capability expansion.
-    /// The shim consumes this token via sandbox_extension_consume()
-    /// to dynamically expand the sandbox for the given path.
-    ExtensionToken {
-        /// The HMAC-authenticated extension token string
-        token: String,
-        /// The path this token grants access to
-        path: PathBuf,
-        /// The access mode granted (Read -> read token, Write/ReadWrite -> read-write token)
-        access: AccessMode,
     },
 }

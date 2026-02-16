@@ -1264,9 +1264,9 @@ fn get_thread_count() -> usize {
     }
 }
 
-/// Supervisor IPC event loop for capability expansion (macOS).
+/// Supervisor IPC event loop (non-Linux).
 ///
-/// Polls the supervisor socket for ShimRequest messages from the DYLD shim.
+/// Polls the supervisor socket for messages from the sandboxed child.
 /// Uses `poll(2)` with a 200ms timeout to periodically check child status.
 /// Returns the child's wait status and any denial records collected.
 #[cfg(not(target_os = "linux"))]
@@ -1276,7 +1276,6 @@ fn run_supervisor_loop(
     config: &SupervisorConfig<'_>,
 ) -> Result<(WaitStatus, Vec<DenialRecord>)> {
     let sock_fd = sock.as_raw_fd();
-    let mut rate_limiter = RateLimiter::new(10, 5);
     let mut denials = Vec::new();
 
     loop {
@@ -1297,13 +1296,7 @@ fn run_supervisor_loop(
             if pfd.revents & libc::POLLIN != 0 {
                 match sock.recv_message() {
                     Ok(msg) => {
-                        if let Err(e) = handle_supervisor_message(
-                            sock,
-                            msg,
-                            config,
-                            &mut rate_limiter,
-                            &mut denials,
-                        ) {
+                        if let Err(e) = handle_supervisor_message(sock, msg, config, &mut denials) {
                             warn!("Error handling supervisor message: {}", e);
                         }
                     }
@@ -1406,13 +1399,7 @@ fn run_supervisor_loop(
             if sock_fd_active && pfds[0].revents & libc::POLLIN != 0 {
                 match sock.recv_message() {
                     Ok(msg) => {
-                        if let Err(e) = handle_supervisor_message(
-                            sock,
-                            msg,
-                            config,
-                            &mut rate_limiter,
-                            &mut denials,
-                        ) {
+                        if let Err(e) = handle_supervisor_message(sock, msg, config, &mut denials) {
                             warn!("Error handling supervisor message: {}", e);
                         }
                     }
@@ -1665,7 +1652,6 @@ fn handle_supervisor_message(
     sock: &mut SupervisorSocket,
     msg: SupervisorMessage,
     config: &SupervisorConfig<'_>,
-    rate_limiter: &mut RateLimiter,
     denials: &mut Vec<DenialRecord>,
 ) -> Result<()> {
     match msg {
@@ -1751,163 +1737,9 @@ fn handle_supervisor_message(
             };
             sock.send_response(&response)?;
         }
-        SupervisorMessage::ShimRequest { path, access } => {
-            // Rate limit shim requests to prevent prompt flooding
-            if !rate_limiter.try_acquire() {
-                debug!("Rate limited shim request for {}", path.display());
-                denials.push(DenialRecord {
-                    path: path.clone(),
-                    access,
-                    reason: DenialReason::RateLimited,
-                });
-                let response = SupervisorResponse::Decision {
-                    request_id: String::new(),
-                    decision: ApprovalDecision::Denied {
-                        reason: "Rate limited: too many expansion requests".to_string(),
-                    },
-                };
-                return sock.send_response(&response);
-            }
-
-            // macOS DYLD shim request: the shim intercepted an EPERM on a file
-            // operation and is asking the supervisor to issue an extension token.
-            // The shim does NOT send a PID -- the supervisor uses the known child
-            // PID from fork() and validates via peer_pid().
-            handle_shim_request(sock, &path, &access, config, denials)?;
-        }
     }
 
     Ok(())
-}
-
-/// Handle a request from the macOS DYLD shim for sandbox extension expansion.
-///
-/// Flow:
-/// 1. Check `never_grant` - permanently blocked paths are rejected immediately
-/// 2. Delegate to `ApprovalBackend` for the decision
-/// 3. If granted on macOS, issue an extension token and send it to the shim
-/// 4. If denied, send a Decision::Denied response and record the denial
-#[cfg(target_os = "macos")]
-fn handle_shim_request(
-    sock: &mut SupervisorSocket,
-    path: &std::path::Path,
-    access: &nono::AccessMode,
-    config: &SupervisorConfig<'_>,
-    denials: &mut Vec<DenialRecord>,
-) -> Result<()> {
-    use nono::supervisor::CapabilityRequest;
-
-    // 1. Check never_grant
-    let never_grant_check = config.never_grant.check(path);
-    if never_grant_check.is_blocked() {
-        debug!(
-            "Supervisor: shim request for {} blocked by never_grant",
-            path.display()
-        );
-        denials.push(DenialRecord {
-            path: path.to_path_buf(),
-            access: *access,
-            reason: DenialReason::PolicyBlocked,
-        });
-        let response = SupervisorResponse::Decision {
-            request_id: String::new(),
-            decision: ApprovalDecision::Denied {
-                reason: format!(
-                    "Path is permanently blocked by never_grant policy: {}",
-                    path.display()
-                ),
-            },
-        };
-        return sock.send_response(&response);
-    }
-
-    // 2. Construct a CapabilityRequest for the approval backend
-    let request = CapabilityRequest {
-        request_id: format!("shim-{}", unique_request_id()),
-        path: path.to_path_buf(),
-        access: *access,
-        reason: Some("Sandbox denied file operation (DYLD shim interception)".to_string()),
-        child_pid: 0, // Filled by caller if needed; peer_pid() validates
-        session_id: String::new(),
-    };
-
-    let decision = match config.approval_backend.request_capability(&request) {
-        Ok(d) => {
-            if d.is_denied() {
-                denials.push(DenialRecord {
-                    path: path.to_path_buf(),
-                    access: *access,
-                    reason: DenialReason::UserDenied,
-                });
-            }
-            d
-        }
-        Err(e) => {
-            warn!("Approval backend error for shim request: {}", e);
-            denials.push(DenialRecord {
-                path: path.to_path_buf(),
-                access: *access,
-                reason: DenialReason::BackendError,
-            });
-            ApprovalDecision::Denied {
-                reason: format!("Approval backend error: {e}"),
-            }
-        }
-    };
-
-    // 3. If granted, issue extension token
-    if decision.is_granted() {
-        match nono::sandbox::extension_issue_file(path, *access) {
-            Ok(token) => {
-                let response = SupervisorResponse::ExtensionToken {
-                    token,
-                    path: path.to_path_buf(),
-                    access: *access,
-                };
-                return sock.send_response(&response);
-            }
-            Err(e) => {
-                warn!("Failed to issue extension token: {}", e);
-                let response = SupervisorResponse::Decision {
-                    request_id: request.request_id,
-                    decision: ApprovalDecision::Denied {
-                        reason: format!("Failed to issue extension token: {e}"),
-                    },
-                };
-                return sock.send_response(&response);
-            }
-        }
-    }
-
-    // 4. Denied
-    let response = SupervisorResponse::Decision {
-        request_id: request.request_id,
-        decision,
-    };
-    sock.send_response(&response)
-}
-
-/// Handle a request from the macOS DYLD shim (Linux stub).
-/// On Linux, shim requests are not used (seccomp-notify handles expansion).
-#[cfg(not(target_os = "macos"))]
-fn handle_shim_request(
-    sock: &mut SupervisorSocket,
-    path: &std::path::Path,
-    _access: &nono::AccessMode,
-    _config: &SupervisorConfig<'_>,
-    _denials: &mut Vec<DenialRecord>,
-) -> Result<()> {
-    warn!(
-        "Received ShimRequest on non-macOS platform for {}",
-        path.display()
-    );
-    let response = SupervisorResponse::Decision {
-        request_id: String::new(),
-        decision: ApprovalDecision::Denied {
-            reason: "ShimRequest is only supported on macOS".to_string(),
-        },
-    };
-    sock.send_response(&response)
 }
 
 /// Generate a unique request ID from timestamp + random component.
@@ -1915,6 +1747,7 @@ fn handle_shim_request(
 /// Uses nanosecond timestamp for ordering plus random bytes for
 /// uniqueness under concurrency. Not cryptographically significant --
 /// used for audit correlation and replay detection, not security.
+#[cfg(target_os = "linux")]
 fn unique_request_id() -> String {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1997,20 +1830,11 @@ fn open_path_for_access(
     })
 }
 
-/// Resolve a version manager shim to its actual binary for DYLD interposition.
-///
-/// Currently unused -- the DYLD shim is disabled pending arm64 stability work.
-/// Kept for when the shim is re-enabled.
-///
-/// Version managers like pyenv, rbenv, and nodenv use shell script shims
-/// (`#!/usr/bin/env bash`) that route through SIP-protected interpreters.
-/// macOS SIP strips `DYLD_INSERT_LIBRARIES` from platform binaries, so the
-/// nono DYLD shim never gets loaded into the actual runtime binary.
-///
 /// Token-bucket rate limiter for supervisor expansion requests.
 ///
 /// Prevents a compromised agent from flooding the terminal with approval prompts.
 /// Defaults to 10 requests/second with a burst of 5.
+#[cfg(target_os = "linux")]
 struct RateLimiter {
     /// Maximum tokens (burst capacity)
     capacity: u32,
@@ -2022,6 +1846,7 @@ struct RateLimiter {
     last_refill: std::time::Instant,
 }
 
+#[cfg(target_os = "linux")]
 impl RateLimiter {
     fn new(rate: u32, burst: u32) -> Self {
         Self {
@@ -2152,6 +1977,7 @@ mod tests {
         assert!(!is_dangerous_env_var("SSH_AUTH_SOCK"));
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn test_rate_limiter_allows_burst() {
         let mut limiter = RateLimiter::new(10, 5);
@@ -2163,6 +1989,7 @@ mod tests {
         assert!(!limiter.try_acquire());
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn test_rate_limiter_refills_over_time() {
         let mut limiter = RateLimiter::new(10, 3);

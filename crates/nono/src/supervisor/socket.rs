@@ -452,9 +452,6 @@ mod tests {
                 assert_eq!(req.path, PathBuf::from("/tmp/test"));
                 assert_eq!(req.child_pid, 12345);
             }
-            SupervisorMessage::ShimRequest { .. } => {
-                panic!("Expected Request, got ShimRequest");
-            }
         }
 
         // Supervisor sends response
@@ -479,9 +476,6 @@ mod tests {
             } => {
                 assert_eq!(request_id, "req-001");
                 assert!(decision.is_granted());
-            }
-            SupervisorResponse::ExtensionToken { .. } => {
-                panic!("Expected Decision, got ExtensionToken");
             }
         }
     }
