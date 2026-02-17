@@ -110,8 +110,13 @@ Credentials (API keys, tokens, passwords) are loaded from the system keystore an
 
 ```bash
 # Store a secret in the system keystore, then inject it at runtime
-nono keys set ANTHROPIC_API_KEY
-nono run --profile claude-code --allow-cwd -- claude
+security add-generic-password \
+  -T /usr/local/bin/nono \
+  -s "nono" \
+  -a "openai_api_key" \
+  -w "my_super_secret_api_key"
+
+nono run --secrets  openai_api_key --allow-cwd -- agent-command
 ```
 
 ### Composable Policy Groups (Coming Soon!)

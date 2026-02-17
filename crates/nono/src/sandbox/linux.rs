@@ -700,7 +700,7 @@ pub fn deny_notif(notify_fd: std::os::fd::RawFd, notif_id: u64) -> Result<()> {
     let resp = SeccompNotifResp {
         id: notif_id,
         val: 0,
-        error: -(libc::EPERM as i32),
+        error: -libc::EPERM,
         flags: 0,
     };
 
