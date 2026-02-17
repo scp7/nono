@@ -8,7 +8,7 @@
   From the creator of
   <a href="https://sigstore.dev"><strong>Sigstore</strong></a>
   <br/>
-  <sub>The industry standard for software supply chain security, used by PyPI, Homebrew, Maven, Google, GitHub, and NVIDIA</sub>
+  <sub>The standard for software signing, used by PyPI, npm, and GitHub</sub>
 </p>
 
 <a href="https://discord.gg/pPcjYzGvbS">
