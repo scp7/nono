@@ -189,11 +189,11 @@ nono run --supervised --allow-cwd -- claude
  
 ### Audit Trail (Coming Soon!)
 
-All capability requests and approval decisions are logged, providing a record of what the sandboxed process attempted to access and what was granted or denied.
+Every sandboxed session records what command was run, when it started and ended, its exit code, tracked paths, and cryptographic snapshot commitments. Session logs can be inspected as structured JSON for compliance and forensics.
 
 ```bash
-# Check why a specific path would be blocked
-nono why --path ~/.ssh/id_rsa --op read
+# Show audit record for a session
+nono audit show 20260216-193311-20751 --json
 ```
 
 ## Quick Start
