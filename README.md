@@ -28,265 +28,234 @@
 > [!WARNING]
 > This is an early alpha release that has not undergone comprehensive security audits. While we have taken care to implement robust security measures, there may still be undiscovered issues. We do not recommend using this in production until we release a stable version of 1.0.
 
-**nono** is a secure, kernel-enforced capability shell for running AI agents and any POSIX style process. Unlike policy-based sandboxes that intercept and filter operations, nono leverages OS security primitives (Landlock on Linux, Seatbelt on macOS) to create an environment where unauthorized operations are structurally impossible.
+> [!NOTE]
+> We are midway through seperating the CLI and core library. The CLI available on homebrew tap (version v0.5.0) is fine to use, but the core library is not yet ready for public use. We will update this README with installation instructions all library clients are ready.
 
-**nono** also provides protections against destructive commands (rm -rf ..) and provides a way to securely store API keys, tokens, secrets that are injected securely into the process at run time.
+AI agents get filesystem access, can run shell commands, and might get prompt-injected. nono makes the dangerous bits structurally impossible. Kernel-enforced sandboxing (Landlock on Linux, Seatbelt on macOS) blocks unauthorized file access at the syscall level. Destructive commands like rm -rf are denied before they run. Secrets are injected securely without touching disk. Every filesystem change gets an undo snapshot. And when the agent needs to do something outside its permissions, a supervisor handles approval transparently. Not policy that could be bypassed — structural impossibility.
 
-## Architecture
+## CLI
 
-nono is structured as a Cargo workspace with a clean separation between the core library and CLI:
+The CLI builds on the library to provide a ready-to-use sandboxing tool, popular with coding-agents, with built-in profiles, policy groups, and interactive UX.
 
+```bash
+# Claude Code with inbuilt profile
+nono run --profile claude-code -- claude
+# OpenCode with custom permissions
+nono run --profile opencode --allow-cwd/src --allow-cwd/output -- opencode
+# OpenClaw with custom permissions
+nono run --profile openclaw --allow-cwd -- openclaw gateway
+# Any command with custom permissions
+nono run --read ./src --write ./output -- cargo build
 ```
-nono/
-├── crates/
-│   ├── nono/          # Core library - pure sandbox primitive
-│   └── nono-cli/      # CLI binary - security policy and UX
-└── bindings/
-    └── c/             # C FFI bindings (nono-ffi)
-```
 
-### Core Library (`nono`)
+## Library (Coming very Soon!)
 
-The core library is a **policy-free sandbox primitive**. It provides:
+The core is a Rust library that can be embedded into any application via native bindings. The library is a policy-free sandbox primitive -- it applies only what clients explicitly request.
 
-- `CapabilitySet` - Builder for defining filesystem and network capabilities
-- `Sandbox::apply()` - Applies OS-level restrictions (irreversible)
-- `SandboxState` - Serialization for passing sandbox state across process boundaries
-- `QueryContext` - Permission checking before operations
-- `keystore` - Secure credential loading from system keystore
-- `undo` - Content-addressable snapshot system for file restoration
-
-The library applies ONLY what clients explicitly request. All security policy decisions (deny rules, dangerous commands, system paths) are left to the caller.
+#### <img src="https://cdn.jsdelivr.net/gh/devicons/devicon/icons/rust/rust-original.svg" width="18" height="18" alt="Rust"/> Rust — [crates.io](https://crates.io/crates/nono)
 
 ```rust
 use nono::{CapabilitySet, Sandbox};
 
 let mut caps = CapabilitySet::new();
-caps.allow_read("/path/to/read")?;
-caps.allow_write("/path/to/write")?;
+caps.allow_read("/data/models")?;
+caps.allow_write("/tmp/workspace")?;
 
-Sandbox::apply(&caps)?;  // Irreversible
+Sandbox::apply(&caps)?;  // Irreversible — kernel-enforced from here on
 ```
 
-### CLI (`nono-cli`)
+#### <img src="https://cdn.jsdelivr.net/gh/devicons/devicon/icons/python/python-original.svg" width="18" height="18" alt="Python"/> Python — [nono-py](https://github.com/always-further/nono-py)
 
-The CLI builds on the core library to provide a complete sandboxing solution:
+```python
+from nono_py import CapabilitySet, AccessMode, apply
 
-- Built-in profiles for popular AI agents (Claude Code, OpenCode, OpenClaw)
-- Group-based security policy with deny rules
-- Dangerous command blocking
-- Interactive undo/restore functionality
-- Hook integration for Claude Code
+caps = CapabilitySet()
+caps.allow_path("/data/models", AccessMode.READ)
+caps.allow_path("/tmp/workspace", AccessMode.READ_WRITE)
 
-### FFI Bindings (`nono-ffi`)
-
-C FFI bindings expose the core library via `extern "C"` functions with an auto-generated `nono.h` header. This enables integration from any language that can call C functions.
-
-### Language Bindings
-
-Language-specific bindings are maintained in separate repositories:
-
-| Language | Repository | Package |
-|----------|------------|---------|
-| Python | [nono-py](https://github.com/always-further/nono-py) | PyPI |
-| TypeScript | [nono-ts](https://github.com/always-further/nono-ts) | npm | 
-
-## Quick Start
-
-### MacOS
-
-```bash
-brew tap always-further/nono 
-brew install nono
-```
-> [!NOTE]
-> The package is not in homebrew official yet, [give us a star](https://github.com/always-further/nono) to help raise our profile for when request approval
-
-### Linux Package Managers
-
-We are in the process of packaging nono for popular Linux distributions. In the meantime, you can use the prebuilt binaries or build from source.
-
-### Building from Source
-
-See the [Development Guide](https://docs.nono.sh/development) for instructions on building nono from source.
-
-### Use of AI for Development
-
-We encourage using AI tools to contribute to nono! However, you must understand and carefully review any AI-generated code before submitting. AI is a part of the life of software development now, but its use can unwittingly introduce security vulnerabilities — and the security of nono is paramount. Always review and test your code thoroughly, especially around core sandboxing functionality. Being able to explain your changes in your own words also helps reviewers. If you don't understand how a change works, please ask for help in the Discord before submitting a PR.
-
-## Supported Clients
-
-nono ships with built-in profiles for popular AI coding agents. Each profile defines audited, minimal permissions so you can get started with a single command.
-
-<table>
-  <tr>
-    <th>Client</th>
-    <th>Command</th>
-    <th>Network</th>
-    <th>Docs</th>
-  </tr>
-  <tr>
-    <td><strong>Claude Code</strong><br/>Anthropic's CLI coding agent</td>
-    <td><code>nono run --profile claude-code -- claude</code></td>
-    <td>Allowed</td>
-    <td><a href="https://docs.nono.sh/clients/claude-code">Guide</a></td>
-  </tr>
-  <tr>
-    <td><strong>OpenCode</strong><br/>Open-source AI coding assistant</td>
-    <td><code>nono run --profile opencode -- opencode</code></td>
-    <td>Allowed</td>
-    <td><a href="https://docs.nono.sh/clients/opencode">Guide</a></td>
-  </tr>
-  <tr>
-    <td><strong>OpenClaw</strong><br/>Multi-channel AI agent platform</td>
-    <td><code>nono run --profile openclaw -- openclaw gateway</code></td>
-    <td>Allowed</td>
-    <td><a href="https://docs.nono.sh/clients/openclaw">Guide</a></td>
-  </tr>
-</table>
-
-Don't see your tool? nono is agent-agnostic and works with any CLI command:
-
-```bash
-nono run --allow . -- my-agent
+apply(caps)  # Apply CapabilitySet
 ```
 
-## Projects using nono
+#### <img src="https://cdn.jsdelivr.net/gh/devicons/devicon/icons/typescript/typescript-original.svg" width="18" height="18" alt="TypeScript"/> TypeScript — [nono-ts](https://github.com/always-further/nono-ts)
 
-<table>
-  <tr>
-    <th>Project</th>
-    <th>Repository</th>
-  </tr>
-  <tr>
-    <td><strong>claw-wrap</strong></td>
-    <td><a href="https://github.com/dedene/claw-wrap">GitHub</a></td>
-  </tr>
-</table>
+```typescript
+import { CapabilitySet, AccessMode, apply } from "nono-ts";
 
+const caps = new CapabilitySet();
+caps.allowPath("/data/models", AccessMode.Read);
+caps.allowPath("/tmp/workspace", AccessMode.ReadWrite);
 
-### Shell Alias (Claude Code example)
-
-For quick access, add a shell function:
-
-```bash
-sclaude() {
-    nono run --profile claude-code --allow . "$@" -- claude
-}
-```
-
-Usage:
-```bash
-sclaude                           # Current directory only
-sclaude --allow /tmp              # Current directory + /tmp
-sclaude --read ~/Documents        # Current directory + read-only ~/Documents
+apply(caps);  // Irreversible — kernel-enforced from here on
 ```
 
 ## Features
 
-- **No escape hatch** - Once inside nono, there is no mechanism to bypass restrictions
-- **Agent agnostic** - Works with any AI agent (Claude, GPT, opencode, openclaw) or any process
-- **OS-level enforcement** - Kernel denies unauthorized operations
-- **Destructive command blocking** - Blocks dangerous commands like `rm`, `dd`, `chmod` by default
-- **Cross-platform** - Linux (Landlock) and macOS (Seatbelt)
+### Kernel-Enforced Sandbox
 
-## Usage
+nono applies OS-level restrictions that cannot be bypassed or escalated from within the sandboxed process. Permissions are defined as capabilities granted before execution -- once the sandbox is applied, it is irreversible. All child processes inherit the same restrictions.
+
+| Platform | Mechanism | Minimum Kernel |
+|----------|-----------|----------------|
+| macOS | Seatbelt | 10.5+ |
+| Linux | Landlock | 5.13+ |
 
 ```bash
-# Allow read+write to current directory
-nono run --allow . -- command
-
-# Separate read and write permissions
+# Grant read to src, write to output — everything else is denied by the kernel
 nono run --read ./src --write ./output -- cargo build
+```
 
-# Multiple paths
-nono run --allow ./project-a --allow ./project-b -- command
+### Secrets and Key Isolation
 
-# Block network access
-nono run --allow . --net-block -- command
+Credentials (API keys, tokens, passwords) are loaded from the system keystore and injected into the sandboxed process as environment variables at runtime. The keystore files themselves are never exposed to the sandboxed process, preventing exfiltration of raw secrets even if the agent is compromised.
 
-# Dry run (show what would be sandboxed)
-nono run --allow . --dry-run -- command
+```bash
+# Store a secret in the system keystore, then inject it at runtime
+nono keys set ANTHROPIC_API_KEY
+nono run --profile claude-code --allow-cwd -- claude
+```
 
-# Start an interactive shell inside the sandbox
-nono shell --allow .
+### Composable Policy Groups (Coming Soon!)
 
-# Check why a path would be blocked
+Security policy is defined as named groups in a single JSON file. Each group specifies allow/deny rules for filesystem paths, command execution, and platform-specific behavior. Profiles reference groups by name, making it straightforward to compose fine-grained policies from reusable building blocks. Profile-level filesystem entries and CLI overrides are applied additively on top.
+
+Groups define reusable rules:
+
+```json
+{
+  "deny_credentials": {
+    "description": "Block access to cryptographic keys, tokens, and cloud credentials",
+    "deny": {
+      "access": ["~/.ssh", "~/.gnupg", "~/.aws", "~/.kube", "~/.docker"]
+    }
+  },
+  "node_runtime": {
+    "description": "Node.js runtime and package manager paths",
+    "allow": {
+      "read": ["~/.nvm", "~/.fnm", "~/.npm", "/usr/local/lib/node_modules"]
+    }
+  }
+}
+```
+
+Profiles compose groups by name and add their own filesystem entries on top:
+
+```json
+{
+  "claude-code": {
+    "security": {
+      "groups": ["user_caches_macos", "node_runtime", "rust_runtime", "unlink_protection"]
+    },
+    "filesystem": {
+      "allow": ["$HOME/.claude"],
+      "read_file": ["$HOME/.gitconfig"]
+    }
+  }
+}
+```
+
+### Destructive Command Blocking
+
+Dangerous commands (`rm`, `dd`, `chmod`, `sudo`, `scp`, and others) are blocked before execution. This is layered on top of the kernel sandbox as defense-in-depth -- even if a command were allowed, the sandbox would still enforce filesystem restrictions. Commands can be selectively allowed or additional commands blocked per invocation.
+
+```bash
+# rm is blocked by default
+$ nono run --allow-cwd -- rm -rf /
+nono: blocked command: rm
+
+# Selectively allow a blocked command
+nono run --allow-cwd --allow-command rm -- rm ./temp-file.txt
+```
+
+### Undo and Snapshots (Coming Soon!)
+
+nono takes content-addressable snapshots of your working directory before the sandboxed process runs. If the agent makes unwanted changes, you can interactively review and restore individual files or the entire directory to its previous state. Snapshots use SHA-256 deduplication and Merkle tree commitments for integrity verification.
+
+```bash
+# List snapshots taken during sandboxed sessions
+nono undo list
+
+# Interactively review and restore changes
+nono undo restore
+```
+
+### Supervisor and Capability Expansion (Coming Soon!)
+
+On Linux, nono can run in supervised mode where the sandboxed process starts with minimal permissions. When the agent needs access to a file outside its sandbox, the request is intercepted via seccomp user notification and routed to the supervisor, which prompts the user for approval. Approved access is granted transparently by injecting file descriptors -- the agent never needs to know about nono. Sensitive paths (system config, SSH keys, etc.) are configured as never-grantable regardless of user approval.
+
+```bash
+# Run in supervised mode — agent starts locked down, requests are prompted
+nono run --supervised --allow-cwd -- claude
+```
+ 
+### Audit Trail (Coming Soon!)
+
+All capability requests and approval decisions are logged, providing a record of what the sandboxed process attempted to access and what was granted or denied.
+
+```bash
+# Check why a specific path would be blocked
 nono why --path ~/.ssh/id_rsa --op read
 ```
 
-## Command Blocking
+## Quick Start
 
-nono blocks what might be considered dangerous commands by default to prevent AI agents from accidentally (or maliciously) causing harm. This provides defense-in-depth beyond filesystem restrictions.
-
-### Blocked Commands
-
-The following categories of commands are blocked by default:
-
-| Category | Commands |
-|----------|----------|
-| File destruction | `rm`, `rmdir`, `shred`, `srm` |
-| Disk operations | `dd`, `mkfs`, `fdisk`, `parted`, `wipefs` |
-| Permission changes | `chmod`, `chown`, `chgrp`, `chattr` |
-| System modification | `shutdown`, `reboot`, `halt`, `systemctl` |
-| Package managers | `apt`, `brew`, `pip`, `yum`, `pacman` |
-| File operations | `mv`, `cp`, `truncate` |
-| Privilege escalation | `sudo`, `su`, `doas`, `pkexec` |
-| Network exfiltration | `scp`, `rsync`, `sftp`, `ftp` |
-
-### Overriding Command Blocks
+### macOS
 
 ```bash
-# Allow a specific blocked command (use with caution)
-nono run --allow . --allow-command rm -- rm ./temp-file.txt
-
-# Block an additional command
-nono run --allow . --block-command my-dangerous-tool -- my-script.sh
+brew tap always-further/nono
+brew install nono
 ```
 
-### Kernel-Level Protection
+> [!NOTE]
+> The package is not in homebrew official yet, [give us a star](https://github.com/always-further/nono) to help raise our profile for when we request approval.
 
-nono applies kernel-level protections that limit destructive operations:
+### Linux
 
-- **File and directory deletion blocked outside granted paths** - `unlink`/`rmdir` syscalls are blocked for system paths like `/tmp`, `/dev`, and any path not explicitly granted with `--allow` or `--write`
+See the [Installation Guide](https://docs.nono.sh/installation) for prebuilt binaries and package manager instructions.
 
-Within paths you explicitly grant write access to (`--allow` or `--write`), file creation, modification, and deletion (including directory deletion) are permitted - this is necessary for normal file operations like atomic writes and directory renames.
+### From Source
 
-```bash
-# File deletion blocked in system paths (even with --allow-command rm)
-$ nono run --allow ./project --allow-command rm -- rm /etc/hosts
-rm: /etc/hosts: Operation not permitted
-```
+See the [Development Guide](https://docs.nono.sh/development) for building from source.
 
+## Supported Clients
 
-## Platform Support
+nono ships with built-in profiles for popular AI coding agents. Each profile defines audited, minimal permissions.
 
-| Platform | Mechanism | Kernel | Status |
-|----------|-----------|--------|--------|
-| macOS | Seatbelt | 10.5+ | Filesystem + Network |
-| Linux | Landlock | 5.13+ | Filesystem |
-| Windows | - | - | Not yet supported |
+| Client | Profile | Docs |
+|--------|---------|------|
+| **Claude Code** | `claude-code` | [Guide](https://docs.nono.sh/clients/claude-code) |
+| **OpenCode** | `opencode` | [Guide](https://docs.nono.sh/clients/opencode) |
+| **OpenClaw** | `openclaw` | [Guide](https://docs.nono.sh/clients/openclaw) |
 
+nono is agent-agnostic and works with any CLI command. See the [full documentation](https://docs.nono.sh) for usage details, configuration, and integration guides.
 
-## Security Model
+## Projects using nono
 
-nono follows a capability-based security model with defense-in-depth:
+| Project | Repository |
+|---------|------------|
+| **claw-wrap** | [GitHub](https://github.com/dedene/claw-wrap) |
 
-1. **Command validation** - Dangerous commands (rm, dd, chmod, etc.) are blocked before execution
-2. **Sandbox applied** - OS-level restrictions are applied (irreversible)
-3. **Kernel enforcement** - File and directory deletion blocked outside granted write paths
-4. **Command executed** - The command runs with only granted capabilities
-5. **All children inherit** - Subprocesses also run under restrictions
-6. **Key isolation** - Secrets are injected securely and cannot be accessed outside the sandbox
+## Architecture
 
+nono is structured as a Cargo workspace:
 
-## Documentation
+- **nono** (`crates/nono/`) -- Core library. A policy-free sandbox primitive that applies only what clients explicitly request.
+- **nono-cli** (`crates/nono-cli/`) -- CLI binary. Owns all security policy, profiles, hooks, and UX.
+- **nono-ffi** (`bindings/c/`) -- C FFI bindings with auto-generated header.
 
-Full documentation is available at [docs.nono.sh](https://docs.nono.sh), including guides for supported clients, configuration, and building from source.
+Language-specific bindings are maintained separately:
+
+| Language | Repository | Package |
+|----------|------------|---------|
+| Python | [nono-py](https://github.com/always-further/nono-py) | PyPI |
+| TypeScript | [nono-ts](https://github.com/always-further/nono-ts) | npm |
+
+## Contributing
+
+We encourage using AI tools to contribute to nono. However, you must understand and carefully review any AI-generated code before submitting. The security of nono is paramount -- always review and test your code thoroughly, especially around core sandboxing functionality. If you don't understand how a change works, please ask for help in the [Discord](https://discord.gg/pPcjYzGvbS) before submitting a PR.
 
 ## Security
 
-If you discover a security vulnerability, please **do not open a public issue**. Public disclosure of vulnerabilities can put all users at risk. Instead, please follow the responsible disclosure process outlined in our [Security Policy](https://github.com/always-further/nono/blob/main/SECURITY.md).
+If you discover a security vulnerability, please **do not open a public issue**. Instead, follow the responsible disclosure process outlined in our [Security Policy](https://github.com/always-further/nono/blob/main/SECURITY.md).
 
 ## License
 
