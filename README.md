@@ -2,7 +2,14 @@
 
 <img src="assets/nono-logo.png" alt="nono logo" width="600"/>
 
-**The Swiss Army knife of agent security**
+**The AI agent security framework that makes the dangerous bits structurally impossible.**
+
+<p>
+  From the creator of
+  <a href="https://sigstore.dev"><strong>Sigstore</strong></a>
+  <br/>
+  <sub>The industry standard for software supply chain security, used by PyPI, Homebrew, Maven, Google, GitHub, and NVIDIA</sub>
+</p>
 
 <a href="https://discord.gg/pPcjYzGvbS">
   <img src="https://img.shields.io/badge/Chat-Join%20Discord-7289da?style=for-the-badge&logo=discord&logoColor=white" alt="Join Discord"/>
