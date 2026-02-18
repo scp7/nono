@@ -279,8 +279,9 @@ probe_sandbox_availability() {
         return 1
     fi
 
-    SANDBOX_AVAILABLE=1
-    return 0
+    SANDBOX_AVAILABLE=0
+    SANDBOX_UNAVAILABLE_REASON="sandbox probe failed unexpectedly (exit $probe_exit)"
+    return 1
 }
 
 # Skip a sandbox-dependent suite when the host cannot initialize kernel sandboxing.
