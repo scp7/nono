@@ -134,6 +134,8 @@ jobs:
     name: Update Homebrew Formula
     needs: release
     runs-on: ubuntu-latest
+    # Only update stable formula for non-prerelease versions
+    if: ${{ !contains(env.RELEASE_TAG, 'alpha') && !contains(env.RELEASE_TAG, 'beta') && !contains(env.RELEASE_TAG, 'rc') }}
     steps:
       - name: Checkout homebrew-nono
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
