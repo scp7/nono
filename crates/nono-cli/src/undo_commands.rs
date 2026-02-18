@@ -912,7 +912,10 @@ fn format_session_timestamp(started: &str) -> String {
 }
 
 /// Format an absolute timestamp, including year if different from current year
-fn format_absolute_timestamp(dt: &chrono::DateTime<chrono::Local>, now: &chrono::DateTime<chrono::Local>) -> String {
+fn format_absolute_timestamp(
+    dt: &chrono::DateTime<chrono::Local>,
+    now: &chrono::DateTime<chrono::Local>,
+) -> String {
     if dt.format("%Y").to_string() != now.format("%Y").to_string() {
         dt.format("%Y-%m-%d %H:%M").to_string()
     } else {
@@ -1051,8 +1054,14 @@ mod tests {
         let timestamp = past.to_rfc3339();
         let result = format_session_timestamp(&timestamp);
         // Should contain month abbreviation and time, not "ago"
-        assert!(!result.contains("ago"), "Expected absolute time, got: {result}");
-        assert!(result.contains(':'), "Expected time with colon, got: {result}");
+        assert!(
+            !result.contains("ago"),
+            "Expected absolute time, got: {result}"
+        );
+        assert!(
+            result.contains(':'),
+            "Expected time with colon, got: {result}"
+        );
     }
 
     #[test]
@@ -1060,7 +1069,10 @@ mod tests {
         // A timestamp from 2020 should include the year
         let old_timestamp = "2020-06-15T14:30:00Z";
         let result = format_session_timestamp(old_timestamp);
-        assert!(result.contains("2020"), "Expected year in output, got: {result}");
+        assert!(
+            result.contains("2020"),
+            "Expected year in output, got: {result}"
+        );
     }
 
     #[test]
@@ -1070,8 +1082,14 @@ mod tests {
         let future = Utc::now() + chrono::Duration::hours(2);
         let timestamp = future.to_rfc3339();
         let result = format_session_timestamp(&timestamp);
-        assert_ne!(result, "just now", "Future timestamp should not be 'just now'");
-        assert!(!result.contains("ago"), "Future timestamp should not contain 'ago'");
+        assert_ne!(
+            result, "just now",
+            "Future timestamp should not be 'just now'"
+        );
+        assert!(
+            !result.contains("ago"),
+            "Future timestamp should not contain 'ago'"
+        );
     }
 
     #[test]
@@ -1114,7 +1132,10 @@ mod tests {
             chrono::LocalResult::None => panic!("Invalid UTC datetime - this should never happen"),
         };
         let result = format_absolute_timestamp(&dt, &now);
-        assert!(result.contains("2020"), "Expected year 2020 in output, got: {result}");
+        assert!(
+            result.contains("2020"),
+            "Expected year 2020 in output, got: {result}"
+        );
     }
 
     #[test]
@@ -1125,7 +1146,10 @@ mod tests {
         assert_eq!(format_change_summary(3, 0, 0), "+3 files");
         assert_eq!(format_change_summary(0, 2, 0), "~2 modified");
         assert_eq!(format_change_summary(0, 0, 1), "-1 deleted");
-        assert_eq!(format_change_summary(1, 2, 3), "+1 file, ~2 modified, -3 deleted");
+        assert_eq!(
+            format_change_summary(1, 2, 3),
+            "+1 file, ~2 modified, -3 deleted"
+        );
     }
 
     #[test]
@@ -1146,10 +1170,17 @@ mod tests {
         );
 
         // Verify structure: leading indent, then 4 double-space separated fields
-        assert!(output.starts_with("  "), "Output should have 2-space indent");
+        assert!(
+            output.starts_with("  "),
+            "Output should have 2-space indent"
+        );
 
         let parts: Vec<&str> = output.trim().split("  ").collect();
-        assert_eq!(parts.len(), 4, "Expected 4 columns separated by double-space, got: {parts:?}");
+        assert_eq!(
+            parts.len(),
+            4,
+            "Expected 4 columns separated by double-space, got: {parts:?}"
+        );
         assert_eq!(parts[0], session_id);
         assert_eq!(parts[1], timestamp);
         assert_eq!(parts[2], cmd_name);
