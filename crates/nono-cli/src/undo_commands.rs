@@ -873,20 +873,17 @@ fn parse_session_start_time(s: &SessionInfo) -> Option<u64> {
 fn format_session_timestamp(started: &str) -> String {
     use chrono::{DateTime, Local, Utc};
 
-    // Try parsing as RFC3339 timestamp
-    let dt = match DateTime::parse_from_rfc3339(started) {
-        Ok(dt) => dt.with_timezone(&Local),
-        Err(_) => {
-            // Try parsing as epoch seconds
-            if let Ok(secs) = started.parse::<i64>() {
-                match DateTime::from_timestamp(secs, 0) {
-                    Some(dt) => dt.with_timezone(&Local),
-                    None => return started.to_string(),
-                }
-            } else {
-                return started.to_string();
-            }
+    // Try parsing as RFC3339 timestamp, then as epoch seconds
+    let dt = if let Ok(dt) = DateTime::parse_from_rfc3339(started) {
+        dt.with_timezone(&Local)
+    } else if let Ok(secs) = started.parse::<i64>() {
+        if let Some(dt) = DateTime::from_timestamp(secs, 0) {
+            dt.with_timezone(&Local)
+        } else {
+            return started.to_string();
         }
+    } else {
+        return started.to_string();
     };
 
     let now = Utc::now().with_timezone(&Local);
