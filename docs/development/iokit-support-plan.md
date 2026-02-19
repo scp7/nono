@@ -311,10 +311,10 @@ cd nono && cargo build
 ./target/debug/nono run --help | grep iokit
 
 # FAIL: run without --allow-iokit (same crash as Step 0)
-./target/debug/nono run --allow . -- npx playwright chromium --headless about:blank
+./target/debug/nono run --allow . -- node scripts/launch-chromium.mjs
 
 # PASS: run with --allow-iokit
-./target/debug/nono run --allow . --allow-iokit -- npx playwright chromium --headless about:blank
+./target/debug/nono run --allow . --allow-iokit -- node scripts/launch-chromium.mjs
 
 # Verify dry-run output shows IOKit status
 ./target/debug/nono run --allow /tmp --allow-iokit --dry-run -- echo test
