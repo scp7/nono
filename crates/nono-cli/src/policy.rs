@@ -49,6 +49,9 @@ pub struct Group {
     /// If set, this group only applies on the specified platform
     #[serde(default)]
     pub platform: Option<String>,
+    /// If true, this group cannot be removed via trust_groups
+    #[serde(default)]
+    pub required: bool,
     /// Allow operations
     #[serde(default)]
     pub allow: Option<AllowOps>,
@@ -125,7 +128,11 @@ impl ProfileDef {
     /// Convert to a full Profile with merged group list.
     ///
     /// Computes: `(base_groups - trust_groups) + security.groups`
-    pub fn to_profile(&self, base_groups: &[String]) -> profile::Profile {
+    ///
+    /// Returns an error if trust_groups attempts to remove a required group.
+    pub fn to_profile(&self, base_groups: &[String], policy: &Policy) -> Result<profile::Profile> {
+        validate_trust_groups(policy, &self.trust_groups)?;
+
         let mut groups: Vec<String> = base_groups
             .iter()
             .filter(|g| !self.trust_groups.contains(g))
@@ -133,7 +140,7 @@ impl ProfileDef {
             .collect();
         groups.extend(self.security.groups.clone());
 
-        profile::Profile {
+        Ok(profile::Profile {
             meta: self.meta.clone(),
             security: profile::SecurityConfig {
                 groups,
@@ -146,7 +153,7 @@ impl ProfileDef {
             hooks: self.hooks.clone(),
             rollback: self.rollback.clone(),
             interactive: self.interactive,
-        }
+        })
     }
 }
 
@@ -186,8 +193,11 @@ fn expand_path(path_str: &str) -> Result<PathBuf> {
     let expanded = if let Some(rest) = path_str.strip_prefix("~/") {
         let home = config::validated_home()?;
         format!("{}/{}", home, rest)
-    } else if path_str == "~" {
+    } else if path_str == "~" || path_str == "$HOME" {
         config::validated_home()?
+    } else if let Some(rest) = path_str.strip_prefix("$HOME/") {
+        let home = config::validated_home()?;
+        format!("{}/{}", home, rest)
     } else if path_str == "$TMPDIR" {
         config::validated_tmpdir()?
     } else if let Some(rest) = path_str.strip_prefix("$TMPDIR/") {
@@ -198,6 +208,16 @@ fn expand_path(path_str: &str) -> Result<PathBuf> {
     };
 
     Ok(PathBuf::from(expanded))
+}
+
+/// Convert a PathBuf to a UTF-8 string, returning an error for non-UTF-8 paths.
+///
+/// Non-UTF-8 paths would produce incorrect Seatbelt rules via lossy conversion,
+/// potentially targeting the wrong path in deny rules.
+fn path_to_utf8(path: &Path) -> Result<&str> {
+    path.to_str().ok_or_else(|| {
+        NonoError::ConfigParse(format!("Path contains non-UTF-8 bytes: {}", path.display()))
+    })
 }
 
 /// Escape a path for Seatbelt profile strings.
@@ -356,7 +376,7 @@ fn resolve_single_group(
         if let Some(pairs) = &group.symlink_pairs {
             for symlink in pairs.keys() {
                 let expanded = expand_path(symlink)?;
-                let escaped = escape_seatbelt_path(&expanded.to_string_lossy())?;
+                let escaped = escape_seatbelt_path(path_to_utf8(&expanded)?)?;
                 caps.add_platform_rule(format!("(allow file-read* (subpath \"{}\"))", escaped))?;
             }
         }
@@ -435,7 +455,7 @@ fn add_deny_access_rules(
 
     // Seatbelt deny rules only apply on macOS
     if cfg!(target_os = "macos") {
-        let escaped = escape_seatbelt_path(&path.to_string_lossy())?;
+        let escaped = escape_seatbelt_path(path_to_utf8(&path)?)?;
 
         // Determine filter type: literal for files, subpath for directories
         let filter = if path.exists() && path.is_file() {
@@ -487,7 +507,18 @@ pub fn apply_macos_login_keychain_exception(caps: &mut CapabilitySet) {
         .map(|cap| cap.resolved.clone())
         .filter(|path| is_login_db(path))
         .filter_map(|path| {
-            let escaped = match escape_seatbelt_path(&path.to_string_lossy()) {
+            let path_str = match path_to_utf8(&path) {
+                Ok(s) => s,
+                Err(e) => {
+                    warn!(
+                        "Skipping login keychain exception for {}: {}",
+                        path.display(),
+                        e
+                    );
+                    return None;
+                }
+            };
+            let escaped = match escape_seatbelt_path(path_str) {
                 Ok(v) => v,
                 Err(e) => {
                     warn!(
@@ -533,7 +564,14 @@ pub fn apply_unlink_overrides(caps: &mut CapabilitySet) {
         .collect();
 
     for path in writable_paths {
-        let escaped = match escape_seatbelt_path(&path.to_string_lossy()) {
+        let path_str = match path_to_utf8(&path) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!("Skipping unlink override for {}: {}", path.display(), e);
+                continue;
+            }
+        };
+        let escaped = match escape_seatbelt_path(path_str) {
             Ok(e) => e,
             Err(e) => {
                 tracing::warn!("Skipping unlink override for {}: {}", path.display(), e);
@@ -575,7 +613,7 @@ pub fn validate_deny_overlaps(deny_paths: &[PathBuf], caps: &CapabilitySet) -> R
         return Ok(());
     }
 
-    let mut conflicts = Vec::new();
+    let mut fatal_conflicts = Vec::new();
 
     for deny_path in deny_paths {
         for cap in caps.fs_capabilities() {
@@ -594,26 +632,28 @@ pub fn validate_deny_overlaps(deny_paths: &[PathBuf], caps: &CapabilitySet) -> R
                     "Landlock cannot enforce {}. This deny has no effect on Linux.",
                     conflict
                 );
-                conflicts.push(conflict);
+                if cap.source.is_user_intent() {
+                    fatal_conflicts.push(conflict);
+                }
             }
         }
     }
 
-    if conflicts.is_empty() {
+    if fatal_conflicts.is_empty() {
         return Ok(());
     }
 
-    conflicts.sort();
-    conflicts.dedup();
+    fatal_conflicts.sort();
+    fatal_conflicts.dedup();
 
-    let preview = conflicts
+    let preview = fatal_conflicts
         .iter()
         .take(5)
         .map(|c| format!("- {}", c))
         .collect::<Vec<_>>()
         .join("\n");
 
-    let remainder = conflicts.len().saturating_sub(5);
+    let remainder = fatal_conflicts.len().saturating_sub(5);
     let more = if remainder > 0 {
         format!("\n- ... and {} more conflict(s)", remainder)
     } else {
@@ -712,6 +752,32 @@ pub fn get_system_read_paths(policy: &Policy) -> Vec<String> {
     result
 }
 
+/// Validate that trust_groups does not attempt to remove any required groups.
+///
+/// Required groups have `required: true` in policy.json and cannot be excluded
+/// by profiles or user configuration. Returns an error listing all violations.
+pub fn validate_trust_groups(policy: &Policy, trust_groups: &[String]) -> Result<()> {
+    let violations: Vec<&String> = trust_groups
+        .iter()
+        .filter(|name| policy.groups.get(name.as_str()).is_some_and(|g| g.required))
+        .collect();
+
+    if violations.is_empty() {
+        return Ok(());
+    }
+
+    let names = violations
+        .iter()
+        .map(|n| format!("'{}'", n))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    Err(NonoError::ConfigParse(format!(
+        "Cannot exclude required groups via trust_groups: {}",
+        names
+    )))
+}
+
 /// Common deny + system groups shared by all sandbox invocations.
 ///
 /// Reads from the embedded policy.json `base_groups` array. This is the base
@@ -727,10 +793,10 @@ pub fn base_groups() -> Result<Vec<String>> {
 /// Returns `None` if the profile name is not defined in policy.json.
 pub fn get_policy_profile(name: &str) -> Result<Option<profile::Profile>> {
     let policy = load_embedded_policy()?;
-    Ok(policy
-        .profiles
-        .get(name)
-        .map(|def| def.to_profile(&policy.base_groups)))
+    match policy.profiles.get(name) {
+        Some(def) => Ok(Some(def.to_profile(&policy.base_groups, &policy)?)),
+        None => Ok(None),
+    }
 }
 
 /// List all built-in profile names from embedded policy.json.
@@ -790,6 +856,11 @@ mod tests {
                 "test_symlinks": {
                     "description": "Symlink test",
                     "symlink_pairs": { "/etc": "/private/etc" }
+                },
+                "test_required": {
+                    "description": "Required deny group",
+                    "required": true,
+                    "deny": { "access": ["/nonexistent/required/path"] }
                 }
             }
         }"#
@@ -801,7 +872,7 @@ mod tests {
         assert!(policy.is_ok());
         let policy = policy.expect("parse failed");
         assert_eq!(policy.meta.version, 2);
-        assert_eq!(policy.groups.len(), 7);
+        assert_eq!(policy.groups.len(), 8);
     }
 
     #[test]
@@ -1105,6 +1176,24 @@ mod tests {
     }
 
     #[test]
+    fn test_validate_deny_overlaps_group_overlap_warn_only() {
+        use nono::FsCapability;
+
+        let mut caps = CapabilitySet::new();
+        let mut cap = FsCapability::new_dir(std::path::Path::new("/tmp"), AccessMode::Read)
+            .expect("/tmp must exist");
+        cap.source = CapabilitySource::Group("user_tools".to_string());
+        caps.add_fs(cap);
+
+        let deny_paths = vec![PathBuf::from("/tmp/secret")];
+
+        // Group/system overlaps are warning-only. Fatal errors are reserved for
+        // explicit user intent (CLI/profile), where deny-within-allow is likely accidental.
+        validate_deny_overlaps(&deny_paths, &caps)
+            .expect("group overlap should not hard-fail validation");
+    }
+
+    #[test]
     fn test_resolve_deny_group_collects_deny_paths() {
         let policy = load_policy(sample_policy_json()).expect("parse failed");
         let mut caps = CapabilitySet::new();
@@ -1119,6 +1208,55 @@ mod tests {
                 .contains("nonexistent/test/path"),
             "Expected deny path to contain 'nonexistent/test/path', got: {}",
             resolved.deny_paths[0].display()
+        );
+    }
+
+    #[test]
+    fn test_validate_trust_groups_allows_non_required() {
+        let policy = load_policy(sample_policy_json()).expect("parse failed");
+        let result = validate_trust_groups(&policy, &["test_read".to_string()]);
+        assert!(result.is_ok(), "Non-required group should be removable");
+    }
+
+    #[test]
+    fn test_validate_trust_groups_rejects_required() {
+        let policy = load_policy(sample_policy_json()).expect("parse failed");
+        let result = validate_trust_groups(&policy, &["test_required".to_string()]);
+        assert!(result.is_err(), "Required group must not be removable");
+        let err = result.expect_err("expected error");
+        assert!(
+            err.to_string().contains("test_required"),
+            "Error should name the group: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_validate_trust_groups_ignores_unknown() {
+        let policy = load_policy(sample_policy_json()).expect("parse failed");
+        let result = validate_trust_groups(&policy, &["nonexistent_group".to_string()]);
+        assert!(
+            result.is_ok(),
+            "Unknown groups should not trigger required check"
+        );
+    }
+
+    #[test]
+    fn test_embedded_policy_required_groups() {
+        let policy = load_embedded_policy().expect("embedded policy");
+        let required: Vec<&str> = policy
+            .groups
+            .iter()
+            .filter(|(_, g)| g.required)
+            .map(|(name, _)| name.as_str())
+            .collect();
+        assert!(
+            required.contains(&"deny_credentials"),
+            "deny_credentials must be required"
+        );
+        assert!(
+            required.contains(&"deny_shell_configs"),
+            "deny_shell_configs must be required"
         );
     }
 }

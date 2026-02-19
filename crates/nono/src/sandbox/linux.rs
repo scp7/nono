@@ -7,7 +7,7 @@ use landlock::{
     Access, AccessFs, AccessNet, BitFlags, PathBeneath, PathFd, Ruleset, RulesetAttr,
     RulesetCreatedAttr, ABI,
 };
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 /// The target ABI version we support (highest we know about)
 const TARGET_ABI: ABI = ABI::V5;
@@ -107,9 +107,11 @@ pub fn apply(caps: &CapabilitySet) -> Result<()> {
                 NonoError::SandboxInit(format!("Failed to handle net access: {}", e))
             })?
         } else {
-            warn!("Network blocking requested but kernel ABI doesn't support it (requires V4+)");
-            eprintln!("WARNING: Network blocking requested but kernel Landlock ABI doesn't support it (requires V4+). Network access will NOT be restricted.");
-            ruleset_builder
+            return Err(NonoError::SandboxInit(
+                "Network blocking requested but kernel Landlock ABI doesn't support it \
+                 (requires V4+). Refusing to start without network restrictions."
+                    .to_string(),
+            ));
         }
     } else {
         ruleset_builder
