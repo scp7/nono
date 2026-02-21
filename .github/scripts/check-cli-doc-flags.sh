@@ -61,7 +61,7 @@ fi
 missing=()
 while IFS= read -r flag; do
   [[ -z "${flag}" ]] && continue
-  if ! rg -q --fixed-strings -- "--${flag}" "${FLAGS_DOC}"; then
+  if ! grep -Fq -- "--${flag}" "${FLAGS_DOC}"; then
     missing+=("--${flag}")
   fi
 done <<< "${RUN_FLAGS_RAW}"
