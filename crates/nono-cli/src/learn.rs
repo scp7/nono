@@ -6,6 +6,7 @@
 use crate::cli::LearnArgs;
 use nono::{NonoError, Result};
 use std::collections::BTreeSet;
+use std::net::IpAddr;
 use std::path::PathBuf;
 
 #[cfg(target_os = "linux")]
