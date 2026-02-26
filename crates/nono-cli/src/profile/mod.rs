@@ -12,6 +12,9 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+// Re-export InjectMode from nono-proxy for use in profiles
+pub use nono_proxy::config::InjectMode;
+
 /// Profile metadata
 #[derive(Debug, Clone, Default, Deserialize)]
 #[allow(dead_code)]
@@ -53,19 +56,50 @@ pub struct FilesystemConfig {
 /// Allows users to define their own credential services in profiles,
 /// enabling `--proxy-credential` to work with any API without requiring
 /// changes to the built-in `network-policy.json`.
+///
+/// Supports multiple injection modes:
+/// - `header`: Inject into HTTP header with format string (default)
+/// - `url_path`: Replace pattern in URL path (e.g., Telegram Bot API `/bot{}/`)
+/// - `query_param`: Add/replace query parameter (e.g., `?api_key=...`)
+/// - `basic_auth`: HTTP Basic Authentication (credential as `username:password`)
 #[derive(Debug, Clone, Deserialize)]
 pub struct CustomCredentialDef {
     /// Upstream URL to proxy requests to (e.g., "https://api.telegram.org")
     pub upstream: String,
     /// Keystore account name for the credential (e.g., "telegram_bot_token")
     pub credential_key: String,
+    /// Injection mode (default: "header")
+    #[serde(default)]
+    pub inject_mode: InjectMode,
+
+    // --- Header mode fields ---
     /// HTTP header to inject the credential into (default: "Authorization")
+    /// Only used when inject_mode is "header".
     #[serde(default = "default_inject_header")]
     pub inject_header: String,
     /// Format string for the credential value (default: "Bearer {}")
     /// Use {} as placeholder for the credential value.
+    /// Only used when inject_mode is "header".
     #[serde(default = "default_credential_format")]
     pub credential_format: String,
+
+    // --- URL path mode fields ---
+    /// Pattern to match in incoming URL path. Use {} as placeholder for phantom token.
+    /// Example: "/bot{}/" matches "/bot<token>/getMe"
+    /// Only used when inject_mode is "url_path".
+    #[serde(default)]
+    pub path_pattern: Option<String>,
+    /// Pattern for outgoing URL path. Use {} as placeholder for real credential.
+    /// Defaults to same as path_pattern if not specified.
+    /// Only used when inject_mode is "url_path".
+    #[serde(default)]
+    pub path_replacement: Option<String>,
+
+    // --- Query param mode fields ---
+    /// Name of the query parameter to add/replace with the credential.
+    /// Only used when inject_mode is "query_param".
+    #[serde(default)]
+    pub query_param_name: Option<String>,
 }
 
 fn default_inject_header() -> String {
@@ -101,11 +135,58 @@ fn is_http_token_char(c: char) -> bool {
 /// Validate a custom credential definition for security issues.
 ///
 /// Checks:
-/// - `inject_header` must be a valid HTTP token (RFC 7230)
-/// - `credential_format` must not contain CRLF sequences
 /// - `credential_key` must be alphanumeric + underscores only
 /// - `upstream` must be HTTPS (or HTTP for loopback only)
+/// - Mode-specific validation:
+///   - `header`: inject_header must be valid HTTP token, credential_format no CRLF
+///   - `url_path`: path_pattern required, no CRLF in patterns
+///   - `query_param`: query_param_name required, valid query param name
+///   - `basic_auth`: no additional required fields
 fn validate_custom_credential(name: &str, cred: &CustomCredentialDef) -> Result<()> {
+    // Validate credential_key (alphanumeric + underscore) - required for all modes
+    if cred.credential_key.is_empty() {
+        return Err(NonoError::ProfileParse(format!(
+            "credential_key for custom credential '{}' cannot be empty",
+            name
+        )));
+    }
+    if !cred
+        .credential_key
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_')
+    {
+        return Err(NonoError::ProfileParse(format!(
+            "credential_key '{}' for custom credential '{}' must contain only \
+             alphanumeric characters and underscores",
+            cred.credential_key, name
+        )));
+    }
+
+    // Validate upstream URL (HTTPS required, HTTP only for loopback)
+    validate_upstream_url(&cred.upstream, name)?;
+
+    // Mode-specific validation
+    match cred.inject_mode {
+        InjectMode::Header => {
+            validate_header_mode(name, cred)?;
+        }
+        InjectMode::UrlPath => {
+            validate_url_path_mode(name, cred)?;
+        }
+        InjectMode::QueryParam => {
+            validate_query_param_mode(name, cred)?;
+        }
+        InjectMode::BasicAuth => {
+            // No additional required fields for basic_auth mode
+            // Credential value is expected to be "username:password" format
+        }
+    }
+
+    Ok(())
+}
+
+/// Validate header injection mode fields.
+fn validate_header_mode(name: &str, cred: &CustomCredentialDef) -> Result<()> {
     // Validate inject_header (RFC 7230 token)
     if cred.inject_header.is_empty() {
         return Err(NonoError::ProfileParse(format!(
@@ -130,27 +211,81 @@ fn validate_custom_credential(name: &str, cred: &CustomCredentialDef) -> Result<
         )));
     }
 
-    // Validate credential_key (alphanumeric + underscore)
-    if cred.credential_key.is_empty() {
-        return Err(NonoError::ProfileParse(format!(
-            "credential_key for custom credential '{}' cannot be empty",
+    Ok(())
+}
+
+/// Validate URL path injection mode fields.
+fn validate_url_path_mode(name: &str, cred: &CustomCredentialDef) -> Result<()> {
+    // path_pattern is required for url_path mode
+    let pattern = cred.path_pattern.as_ref().ok_or_else(|| {
+        NonoError::ProfileParse(format!(
+            "path_pattern is required for custom credential '{}' with inject_mode 'url_path'",
             name
-        )));
-    }
-    if !cred
-        .credential_key
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '_')
-    {
+        ))
+    })?;
+
+    // Pattern must contain {} placeholder
+    if !pattern.contains("{}") {
         return Err(NonoError::ProfileParse(format!(
-            "credential_key '{}' for custom credential '{}' must contain only \
-             alphanumeric characters and underscores",
-            cred.credential_key, name
+            "path_pattern '{}' for custom credential '{}' must contain {{}} placeholder for the token",
+            pattern, name
         )));
     }
 
-    // Validate upstream URL (HTTPS required, HTTP only for loopback)
-    validate_upstream_url(&cred.upstream, name)?;
+    // No CRLF in pattern
+    if pattern.contains('\r') || pattern.contains('\n') {
+        return Err(NonoError::ProfileParse(format!(
+            "path_pattern for custom credential '{}' contains invalid CRLF characters",
+            name
+        )));
+    }
+
+    // Validate path_replacement if specified
+    if let Some(replacement) = &cred.path_replacement {
+        if !replacement.contains("{}") {
+            return Err(NonoError::ProfileParse(format!(
+                "path_replacement '{}' for custom credential '{}' must contain {{}} placeholder",
+                replacement, name
+            )));
+        }
+        if replacement.contains('\r') || replacement.contains('\n') {
+            return Err(NonoError::ProfileParse(format!(
+                "path_replacement for custom credential '{}' contains invalid CRLF characters",
+                name
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+/// Validate query parameter injection mode fields.
+fn validate_query_param_mode(name: &str, cred: &CustomCredentialDef) -> Result<()> {
+    // query_param_name is required for query_param mode
+    let param_name = cred.query_param_name.as_ref().ok_or_else(|| {
+        NonoError::ProfileParse(format!(
+            "query_param_name is required for custom credential '{}' with inject_mode 'query_param'",
+            name
+        ))
+    })?;
+
+    // Validate query param name (alphanumeric + underscore + hyphen)
+    if param_name.is_empty() {
+        return Err(NonoError::ProfileParse(format!(
+            "query_param_name for custom credential '{}' cannot be empty",
+            name
+        )));
+    }
+    if !param_name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return Err(NonoError::ProfileParse(format!(
+            "query_param_name '{}' for custom credential '{}' must contain only \
+             alphanumeric characters, underscores, and hyphens",
+            param_name, name
+        )));
+    }
 
     Ok(())
 }
@@ -952,8 +1087,12 @@ mod tests {
         let cred = CustomCredentialDef {
             upstream: "https://api.example.com".to_string(),
             credential_key: "api_key".to_string(),
+            inject_mode: InjectMode::Header,
             inject_header: "Authorization".to_string(),
             credential_format: "Bearer {}".to_string(),
+            path_pattern: None,
+            path_replacement: None,
+            query_param_name: None,
         };
         assert!(validate_custom_credential("test", &cred).is_ok());
     }
@@ -963,8 +1102,12 @@ mod tests {
         let cred = CustomCredentialDef {
             upstream: "http://127.0.0.1:8080/api".to_string(),
             credential_key: "local_key".to_string(),
+            inject_mode: InjectMode::Header,
             inject_header: "Authorization".to_string(),
             credential_format: "Bearer {}".to_string(),
+            path_pattern: None,
+            path_replacement: None,
+            query_param_name: None,
         };
         assert!(validate_custom_credential("local", &cred).is_ok());
     }
@@ -974,8 +1117,12 @@ mod tests {
         let cred = CustomCredentialDef {
             upstream: "http://api.example.com".to_string(),
             credential_key: "api_key".to_string(),
+            inject_mode: InjectMode::Header,
             inject_header: "Authorization".to_string(),
             credential_format: "Bearer {}".to_string(),
+            path_pattern: None,
+            path_replacement: None,
+            query_param_name: None,
         };
         let result = validate_custom_credential("test", &cred);
         let err = result.expect_err("HTTP to remote should be rejected");
@@ -987,8 +1134,12 @@ mod tests {
         let cred = CustomCredentialDef {
             upstream: "https://api.example.com".to_string(),
             credential_key: "api_key".to_string(),
+            inject_mode: InjectMode::Header,
             inject_header: "X-Header\r\nEvil: injected".to_string(),
             credential_format: "Bearer {}".to_string(),
+            path_pattern: None,
+            path_replacement: None,
+            query_param_name: None,
         };
         let result = validate_custom_credential("test", &cred);
         let err = result.expect_err("CRLF in header should be rejected");
@@ -1000,8 +1151,12 @@ mod tests {
         let cred = CustomCredentialDef {
             upstream: "https://api.example.com".to_string(),
             credential_key: "api_key".to_string(),
+            inject_mode: InjectMode::Header,
             inject_header: "Authorization".to_string(),
             credential_format: "Bearer {}\r\nEvil: header".to_string(),
+            path_pattern: None,
+            path_replacement: None,
+            query_param_name: None,
         };
         let result = validate_custom_credential("test", &cred);
         let err = result.expect_err("CRLF in format should be rejected");
@@ -1013,8 +1168,12 @@ mod tests {
         let cred = CustomCredentialDef {
             upstream: "https://api.example.com".to_string(),
             credential_key: "api-key".to_string(), // hyphens not allowed
+            inject_mode: InjectMode::Header,
             inject_header: "Authorization".to_string(),
             credential_format: "Bearer {}".to_string(),
+            path_pattern: None,
+            path_replacement: None,
+            query_param_name: None,
         };
         let result = validate_custom_credential("test", &cred);
         let err = result.expect_err("hyphen in key should be rejected");
@@ -1026,8 +1185,12 @@ mod tests {
         let cred = CustomCredentialDef {
             upstream: "https://api.example.com".to_string(),
             credential_key: "api_key".to_string(),
+            inject_mode: InjectMode::Header,
             inject_header: "".to_string(),
             credential_format: "Bearer {}".to_string(),
+            path_pattern: None,
+            path_replacement: None,
+            query_param_name: None,
         };
         let result = validate_custom_credential("test", &cred);
         let err = result.expect_err("empty header should be rejected");
@@ -1039,8 +1202,12 @@ mod tests {
         let cred = CustomCredentialDef {
             upstream: "https://api.example.com".to_string(),
             credential_key: "api_key".to_string(),
+            inject_mode: InjectMode::Header,
             inject_header: "X Header".to_string(),
             credential_format: "Bearer {}".to_string(),
+            path_pattern: None,
+            path_replacement: None,
+            query_param_name: None,
         };
         let result = validate_custom_credential("test", &cred);
         let err = result.expect_err("space in header should be rejected");
@@ -1052,8 +1219,12 @@ mod tests {
         let cred = CustomCredentialDef {
             upstream: "https://api.example.com".to_string(),
             credential_key: "api_key".to_string(),
+            inject_mode: InjectMode::Header,
             inject_header: "X-Header:".to_string(),
             credential_format: "Bearer {}".to_string(),
+            path_pattern: None,
+            path_replacement: None,
+            query_param_name: None,
         };
         let result = validate_custom_credential("test", &cred);
         let err = result.expect_err("colon in header should be rejected");
@@ -1066,8 +1237,12 @@ mod tests {
         let cred = CustomCredentialDef {
             upstream: "https://api.example.com".to_string(),
             credential_key: "api_key".to_string(),
+            inject_mode: InjectMode::Header,
             inject_header: "X-Header!".to_string(), // ! is valid tchar
             credential_format: "Bearer {}".to_string(),
+            path_pattern: None,
+            path_replacement: None,
+            query_param_name: None,
         };
         assert!(validate_custom_credential("test", &cred).is_ok());
     }
@@ -1077,8 +1252,12 @@ mod tests {
         let cred = CustomCredentialDef {
             upstream: "https://api.example.com".to_string(),
             credential_key: "api_key".to_string(),
+            inject_mode: InjectMode::Header,
             inject_header: "Authorization".to_string(),
             credential_format: "Bearer {}\rEvil: header".to_string(),
+            path_pattern: None,
+            path_replacement: None,
+            query_param_name: None,
         };
         let result = validate_custom_credential("test", &cred);
         let err = result.expect_err("CR in format should be rejected");
@@ -1090,8 +1269,12 @@ mod tests {
         let cred = CustomCredentialDef {
             upstream: "https://api.example.com".to_string(),
             credential_key: "api_key".to_string(),
+            inject_mode: InjectMode::Header,
             inject_header: "Authorization".to_string(),
             credential_format: "Bearer {}\nEvil: header".to_string(),
+            path_pattern: None,
+            path_replacement: None,
+            query_param_name: None,
         };
         let result = validate_custom_credential("test", &cred);
         let err = result.expect_err("LF in format should be rejected");
@@ -1104,8 +1287,12 @@ mod tests {
             let cred = CustomCredentialDef {
                 upstream: "https://api.example.com".to_string(),
                 credential_key: "api_key".to_string(),
+                inject_mode: InjectMode::Header,
                 inject_header: "Authorization".to_string(),
                 credential_format: format.to_string(),
+                path_pattern: None,
+                path_replacement: None,
+                query_param_name: None,
             };
             assert!(
                 validate_custom_credential("test", &cred).is_ok(),
@@ -1120,8 +1307,12 @@ mod tests {
         let cred = CustomCredentialDef {
             upstream: "http://localhost:3000/api".to_string(),
             credential_key: "local_key".to_string(),
+            inject_mode: InjectMode::Header,
             inject_header: "Authorization".to_string(),
             credential_format: "Bearer {}".to_string(),
+            path_pattern: None,
+            path_replacement: None,
+            query_param_name: None,
         };
         assert!(validate_custom_credential("local", &cred).is_ok());
     }
@@ -1131,8 +1322,12 @@ mod tests {
         let cred = CustomCredentialDef {
             upstream: "http://[::1]:8080/api".to_string(),
             credential_key: "local_key".to_string(),
+            inject_mode: InjectMode::Header,
             inject_header: "Authorization".to_string(),
             credential_format: "Bearer {}".to_string(),
+            path_pattern: None,
+            path_replacement: None,
+            query_param_name: None,
         };
         assert!(validate_custom_credential("local", &cred).is_ok());
     }
@@ -1142,9 +1337,164 @@ mod tests {
         let cred = CustomCredentialDef {
             upstream: "http://0.0.0.0:3000/api".to_string(),
             credential_key: "local_key".to_string(),
+            inject_mode: InjectMode::Header,
             inject_header: "Authorization".to_string(),
             credential_format: "Bearer {}".to_string(),
+            path_pattern: None,
+            path_replacement: None,
+            query_param_name: None,
         };
         assert!(validate_custom_credential("local", &cred).is_ok());
+    }
+
+    // ============================================================================
+    // Injection Mode Validation Tests
+    // ============================================================================
+
+    #[test]
+    fn test_validate_url_path_mode_valid() {
+        let cred = CustomCredentialDef {
+            upstream: "https://api.telegram.org".to_string(),
+            credential_key: "telegram_token".to_string(),
+            inject_mode: InjectMode::UrlPath,
+            inject_header: "Authorization".to_string(),
+            credential_format: "Bearer {}".to_string(),
+            path_pattern: Some("/bot{}/".to_string()),
+            path_replacement: None,
+            query_param_name: None,
+        };
+        assert!(validate_custom_credential("telegram", &cred).is_ok());
+    }
+
+    #[test]
+    fn test_validate_url_path_mode_missing_pattern() {
+        let cred = CustomCredentialDef {
+            upstream: "https://api.telegram.org".to_string(),
+            credential_key: "telegram_token".to_string(),
+            inject_mode: InjectMode::UrlPath,
+            inject_header: "Authorization".to_string(),
+            credential_format: "Bearer {}".to_string(),
+            path_pattern: None, // Missing required field
+            path_replacement: None,
+            query_param_name: None,
+        };
+        let result = validate_custom_credential("telegram", &cred);
+        let err = result.expect_err("missing path_pattern should be rejected");
+        assert!(err.to_string().contains("path_pattern is required"));
+    }
+
+    #[test]
+    fn test_validate_url_path_mode_pattern_without_placeholder() {
+        let cred = CustomCredentialDef {
+            upstream: "https://api.telegram.org".to_string(),
+            credential_key: "telegram_token".to_string(),
+            inject_mode: InjectMode::UrlPath,
+            inject_header: "Authorization".to_string(),
+            credential_format: "Bearer {}".to_string(),
+            path_pattern: Some("/bot/token/".to_string()), // No {} placeholder
+            path_replacement: None,
+            query_param_name: None,
+        };
+        let result = validate_custom_credential("telegram", &cred);
+        let err = result.expect_err("pattern without {} should be rejected");
+        assert!(err.to_string().contains("{}"));
+    }
+
+    #[test]
+    fn test_validate_url_path_mode_with_replacement() {
+        let cred = CustomCredentialDef {
+            upstream: "https://api.telegram.org".to_string(),
+            credential_key: "telegram_token".to_string(),
+            inject_mode: InjectMode::UrlPath,
+            inject_header: "Authorization".to_string(),
+            credential_format: "Bearer {}".to_string(),
+            path_pattern: Some("/bot{}/".to_string()),
+            path_replacement: Some("/v2/bot{}/".to_string()),
+            query_param_name: None,
+        };
+        assert!(validate_custom_credential("telegram", &cred).is_ok());
+    }
+
+    #[test]
+    fn test_validate_url_path_mode_replacement_without_placeholder() {
+        let cred = CustomCredentialDef {
+            upstream: "https://api.telegram.org".to_string(),
+            credential_key: "telegram_token".to_string(),
+            inject_mode: InjectMode::UrlPath,
+            inject_header: "Authorization".to_string(),
+            credential_format: "Bearer {}".to_string(),
+            path_pattern: Some("/bot{}/".to_string()),
+            path_replacement: Some("/v2/bot/fixed/".to_string()), // No {} placeholder
+            query_param_name: None,
+        };
+        let result = validate_custom_credential("telegram", &cred);
+        let err = result.expect_err("replacement without {} should be rejected");
+        assert!(err.to_string().contains("{}"));
+    }
+
+    #[test]
+    fn test_validate_query_param_mode_valid() {
+        let cred = CustomCredentialDef {
+            upstream: "https://maps.googleapis.com".to_string(),
+            credential_key: "google_maps_key".to_string(),
+            inject_mode: InjectMode::QueryParam,
+            inject_header: "Authorization".to_string(),
+            credential_format: "Bearer {}".to_string(),
+            path_pattern: None,
+            path_replacement: None,
+            query_param_name: Some("key".to_string()),
+        };
+        assert!(validate_custom_credential("google_maps", &cred).is_ok());
+    }
+
+    #[test]
+    fn test_validate_query_param_mode_missing_param_name() {
+        let cred = CustomCredentialDef {
+            upstream: "https://maps.googleapis.com".to_string(),
+            credential_key: "google_maps_key".to_string(),
+            inject_mode: InjectMode::QueryParam,
+            inject_header: "Authorization".to_string(),
+            credential_format: "Bearer {}".to_string(),
+            path_pattern: None,
+            path_replacement: None,
+            query_param_name: None, // Missing required field
+        };
+        let result = validate_custom_credential("google_maps", &cred);
+        let err = result.expect_err("missing query_param_name should be rejected");
+        assert!(err.to_string().contains("query_param_name is required"));
+    }
+
+    #[test]
+    fn test_validate_query_param_mode_empty_param_name() {
+        let cred = CustomCredentialDef {
+            upstream: "https://maps.googleapis.com".to_string(),
+            credential_key: "google_maps_key".to_string(),
+            inject_mode: InjectMode::QueryParam,
+            inject_header: "Authorization".to_string(),
+            credential_format: "Bearer {}".to_string(),
+            path_pattern: None,
+            path_replacement: None,
+            query_param_name: Some("".to_string()), // Empty
+        };
+        let result = validate_custom_credential("google_maps", &cred);
+        let err = result.expect_err("empty query_param_name should be rejected");
+        assert!(err.to_string().contains("cannot be empty"));
+    }
+
+    #[test]
+    fn test_validate_basic_auth_mode_valid() {
+        let cred = CustomCredentialDef {
+            upstream: "https://api.example.com".to_string(),
+            credential_key: "example_basic_auth".to_string(),
+            inject_mode: InjectMode::BasicAuth,
+            inject_header: "Authorization".to_string(),
+            credential_format: "Bearer {}".to_string(),
+            path_pattern: None,
+            path_replacement: None,
+            query_param_name: None,
+        };
+        // BasicAuth mode doesn't require additional fields
+        // Credential value is expected to be "username:password" format
+        assert!(validate_custom_credential("example", &cred).is_ok());
     }
 }
