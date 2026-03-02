@@ -119,8 +119,8 @@ launch_suite() {
         fi
         echo "$rc" > "$exit_file"
     else
-        bash "$SCRIPT_DIR/integration/$script" > "$output_file" 2>&1
-        echo $? > "$exit_file"
+        bash "$SCRIPT_DIR/integration/$script" > "$output_file" 2>&1; rc=$?
+        echo "$rc" > "$exit_file"
     fi
 }
 
