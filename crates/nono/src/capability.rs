@@ -412,8 +412,13 @@ pub struct CapabilitySet {
     tcp_connect_ports: Vec<u16>,
     /// Per-port TCP bind allowlist (Linux Landlock V4+ only).
     tcp_bind_ports: Vec<u16>,
-    /// Localhost TCP ports allowed for bidirectional IPC (connect + bind).
-    /// These apply regardless of NetworkMode, scoped to 127.0.0.1 only.
+    /// TCP ports allowed for bidirectional IPC (connect + bind).
+    /// These apply regardless of NetworkMode.
+    ///
+    /// On macOS (Seatbelt), outbound is scoped to localhost per-port.
+    /// On Linux (Landlock), ConnectTcp/BindTcp filter by port only, not
+    /// by destination IP. Use with `--net-block` or proxy mode to ensure
+    /// only localhost is reachable.
     localhost_ports: Vec<u16>,
     /// Commands explicitly allowed (overrides blocklists - for CLI use)
     allowed_commands: Vec<String>,

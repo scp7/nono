@@ -344,7 +344,7 @@ Can be specified multiple times for multiple ports.
 <Warning>
 **macOS limitation:** Seatbelt cannot filter bind/inbound by port number. When `--allow-port` is specified on macOS, the sandbox permits binding to **any** port (same tradeoff as `--allow-bind`). Outbound connections are still restricted to only the specified localhost ports.
 
-On Linux with Landlock ABI v4+, both connect and bind are enforced per-port.
+**Linux limitation:** Landlock ABI v4+ enforces both connect and bind per-port, but **cannot filter by destination IP**. The ConnectTcp rule allows connecting to the specified port on any IP, not just localhost. In practice this is mitigated by using `--net-block` (which blocks all outbound except the allowed ports) or proxy mode (which routes outbound through the localhost proxy). Only the `--allow-port` + default AllowAll combination (a no-op) would theoretically permit non-localhost connections on the port.
 </Warning>
 
 ## `nono shell` Options

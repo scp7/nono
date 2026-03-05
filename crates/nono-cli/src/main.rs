@@ -435,7 +435,10 @@ fn run_sandbox(run_args: RunArgs, silent: bool) -> Result<()> {
     // network is explicitly blocked, the proxy must NOT activate since that
     // would re-enable network access through the proxy's localhost listener.
     let proxy_active = if matches!(prepared.caps.network_mode(), nono::NetworkMode::Blocked) {
-        if !proxy_credentials.is_empty() || network_profile.is_some() {
+        if !proxy_credentials.is_empty()
+            || network_profile.is_some()
+            || !proxy_allow_hosts.is_empty()
+        {
             warn!(
                 "--net-block is active; ignoring proxy configuration \
                  that would re-enable network access"
@@ -454,6 +457,7 @@ fn run_sandbox(run_args: RunArgs, silent: bool) -> Result<()> {
             nono::NetworkMode::ProxyOnly { .. }
         ) || !proxy_credentials.is_empty()
             || network_profile.is_some()
+            || !proxy_allow_hosts.is_empty()
     };
 
     // Split --rollback-exclude values: glob metacharacters route to filename

@@ -255,8 +255,9 @@ pub struct SandboxArgs {
     #[arg(long, value_name = "PORT")]
     pub allow_bind: Vec<u16>,
 
-    /// Allow bidirectional localhost TCP on a specific port.
-    /// The sandboxed process can both connect to and listen on 127.0.0.1:PORT.
+    /// Allow bidirectional TCP on a specific port (connect + bind).
+    /// On macOS, scoped to localhost. On Linux, port-only (use with
+    /// --net-block or proxy mode to restrict to localhost).
     /// Use for IPC between sandboxed processes (e.g., MCP servers).
     /// Can be specified multiple times for multiple ports.
     #[arg(long, value_name = "PORT")]
