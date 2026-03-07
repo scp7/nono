@@ -62,6 +62,34 @@ pub struct CommandContext {
     pub resolved_path: PathBuf,
 }
 
+/// Strip control characters and ANSI escape sequences from a string.
+///
+/// Prevents terminal injection from attacker-controlled program names
+/// or paths appearing in diagnostic output.
+fn sanitize_for_diagnostic(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            // Skip ESC and the entire escape sequence
+            if let Some(next) = chars.next() {
+                if next == '[' {
+                    for seq_char in chars.by_ref() {
+                        if seq_char.is_ascii_alphabetic() {
+                            break;
+                        }
+                    }
+                }
+            }
+        } else if c.is_control() {
+            // Strip all control characters
+        } else {
+            result.push(c);
+        }
+    }
+    result
+}
+
 /// Formats diagnostic information about sandbox policy.
 ///
 /// This is library code that can be used by any parent process
@@ -170,10 +198,11 @@ impl<'a> DiagnosticFormatter<'a> {
         let binary_path = &cmd.resolved_path;
         for cap in self.caps.fs_capabilities() {
             if cap.access == AccessMode::Read || cap.access == AccessMode::ReadWrite {
-                if binary_path.starts_with(&cap.resolved) {
-                    return true;
-                }
-                if cap.is_file && *binary_path == cap.resolved {
+                if cap.is_file {
+                    if *binary_path == cap.resolved {
+                        return true;
+                    }
+                } else if binary_path.starts_with(&cap.resolved) {
                     return true;
                 }
             }
@@ -192,8 +221,9 @@ impl<'a> DiagnosticFormatter<'a> {
             None => return false,
         };
         for cap in self.caps.fs_capabilities() {
-            if (cap.access == AccessMode::Read || cap.access == AccessMode::ReadWrite)
-                && (binary_dir.starts_with(&cap.resolved) || cap.resolved == binary_dir)
+            if !cap.is_file
+                && (cap.access == AccessMode::Read || cap.access == AccessMode::ReadWrite)
+                && binary_dir.starts_with(&cap.resolved)
             {
                 return true;
             }
@@ -211,23 +241,17 @@ impl<'a> DiagnosticFormatter<'a> {
         match exit_code {
             127 => {
                 // 127 = command not found (shell convention) or execve failed
-                lines.push(
-                    "[nono] Command not found (exit code 127).".to_string(),
-                );
+                lines.push("[nono] Command not found (exit code 127).".to_string());
                 lines.push("[nono]".to_string());
 
                 if let Some(ref cmd) = self.command {
+                    let program = sanitize_for_diagnostic(&cmd.program);
+                    let path = sanitize_for_diagnostic(&cmd.resolved_path.display().to_string());
                     if !self.is_binary_path_readable() {
                         // The binary exists (we resolved it) but the sandbox
                         // can't read it.
-                        lines.push(format!(
-                            "[nono] The binary '{}' was found at:",
-                            cmd.program,
-                        ));
-                        lines.push(format!(
-                            "[nono]   {}",
-                            cmd.resolved_path.display(),
-                        ));
+                        lines.push(format!("[nono] The binary '{}' was found at:", program,));
+                        lines.push(format!("[nono]   {}", path));
                         lines.push(
                             "[nono] but its directory is not readable inside the sandbox."
                                 .to_string(),
@@ -235,35 +259,33 @@ impl<'a> DiagnosticFormatter<'a> {
                         lines.push("[nono]".to_string());
 
                         if let Some(parent) = cmd.resolved_path.parent() {
-                            lines.push("[nono] Fix: grant read access to the binary's directory:".to_string());
-                            lines.push(format!(
-                                "[nono]   nono run --read {} ...",
-                                parent.display(),
-                            ));
+                            let parent_path =
+                                sanitize_for_diagnostic(&parent.display().to_string());
+                            lines.push(
+                                "[nono] Fix: grant read access to the binary's directory:"
+                                    .to_string(),
+                            );
+                            lines.push(format!("[nono]   nono run --read {} ...", parent_path,));
                         }
                     } else if !self.is_binary_dir_readable() {
                         // Binary itself is allowed but its directory isn't
                         // (unlikely but possible with file-level grants)
                         lines.push(format!(
                             "[nono] '{}' resolved to {} but the directory",
-                            cmd.program,
-                            cmd.resolved_path.display(),
+                            program, path,
                         ));
                         lines.push(
                             "[nono] may not be accessible. The sandbox needs read access to"
                                 .to_string(),
                         );
-                        lines.push(
-                            "[nono] the directory containing the binary.".to_string(),
-                        );
+                        lines.push("[nono] the directory containing the binary.".to_string());
                     } else {
                         // Binary path is readable — the command may depend on
                         // a dynamic linker, shared libraries, or shell that
                         // isn't accessible.
                         lines.push(format!(
                             "[nono] '{}' resolved to {} which is readable,",
-                            cmd.program,
-                            cmd.resolved_path.display(),
+                            program, path,
                         ));
                         lines.push(
                             "[nono] but the command still failed to execute. Common causes:"
@@ -283,12 +305,9 @@ impl<'a> DiagnosticFormatter<'a> {
                         );
                         lines.push("[nono]".to_string());
                         lines.push(
-                            "[nono] Run with -v to see all allowed paths and check if"
-                                .to_string(),
+                            "[nono] Run with -v to see all allowed paths and check if".to_string(),
                         );
-                        lines.push(
-                            "[nono] required system directories are included.".to_string(),
-                        );
+                        lines.push("[nono] required system directories are included.".to_string());
                     }
                 } else {
                     lines.push(
@@ -303,16 +322,15 @@ impl<'a> DiagnosticFormatter<'a> {
             }
             126 => {
                 // 126 = command found but not executable
-                lines.push(
-                    "[nono] Permission denied (exit code 126).".to_string(),
-                );
+                lines.push("[nono] Permission denied (exit code 126).".to_string());
                 lines.push("[nono]".to_string());
 
                 if let Some(ref cmd) = self.command {
+                    let program = sanitize_for_diagnostic(&cmd.program);
+                    let path = sanitize_for_diagnostic(&cmd.resolved_path.display().to_string());
                     lines.push(format!(
                         "[nono] '{}' was found at {} but could not be executed.",
-                        cmd.program,
-                        cmd.resolved_path.display(),
+                        program, path,
                     ));
                     lines.push(
                         "[nono] The file may not have execute permission, or the sandbox"
@@ -331,13 +349,6 @@ impl<'a> DiagnosticFormatter<'a> {
                             .to_string(),
                     );
                 }
-            }
-            1 => {
-                // Generic error - could be anything
-                lines.push(format!(
-                    "[nono] Command exited with code {}. This may be due to sandbox restrictions.",
-                    exit_code,
-                ));
             }
             code if (129..=192).contains(&code) => {
                 // Signal-based exit: 128 + signal number
@@ -368,10 +379,7 @@ impl<'a> DiagnosticFormatter<'a> {
                         "[nono] SIGSYS typically means a blocked system call. The command tried"
                             .to_string(),
                     );
-                    lines.push(
-                        "[nono] an operation that the sandbox does not permit."
-                            .to_string(),
-                    );
+                    lines.push("[nono] an operation that the sandbox does not permit.".to_string());
                 } else if sig == 9 {
                     lines.push(format!(
                         "[nono] Command killed by {} (exit code {}).",
@@ -382,9 +390,7 @@ impl<'a> DiagnosticFormatter<'a> {
                         "[nono] The process was forcefully terminated. This is usually not"
                             .to_string(),
                     );
-                    lines.push(
-                        "[nono] caused by sandbox restrictions.".to_string(),
-                    );
+                    lines.push("[nono] caused by sandbox restrictions.".to_string());
                 } else if !sig_name.is_empty() {
                     lines.push(format!(
                         "[nono] Command killed by signal {} / {} (exit code {}).",
