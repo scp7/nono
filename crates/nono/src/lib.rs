@@ -61,7 +61,9 @@ pub mod undo;
 pub use capability::{
     AccessMode, CapabilitySet, CapabilitySource, FsCapability, NetworkMode, SignalMode,
 };
-pub use diagnostic::{DenialReason, DenialRecord, DiagnosticFormatter, DiagnosticMode};
+pub use diagnostic::{
+    CommandContext, DenialReason, DenialRecord, DiagnosticFormatter, DiagnosticMode,
+};
 pub use error::{NonoError, Result};
 pub use keystore::{
     is_env_uri, is_op_uri, load_secret_by_ref, load_secrets, redact_op_uri,

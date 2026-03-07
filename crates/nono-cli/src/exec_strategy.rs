@@ -642,10 +642,16 @@ pub fn execute_supervised(
                 } else {
                     DiagnosticMode::Standard
                 };
-                let formatter = DiagnosticFormatter::new(config.caps)
+                let mut formatter = DiagnosticFormatter::new(config.caps)
                     .with_mode(mode)
                     .with_denials(&denials)
                     .with_protected_paths(config.protected_paths);
+                if let Some(program) = config.command.first() {
+                    formatter = formatter.with_command(nono::diagnostic::CommandContext {
+                        program: program.clone(),
+                        resolved_path: config.resolved_program.to_path_buf(),
+                    });
+                }
                 let footer = formatter.format_footer(exit_code);
                 eprintln!("\n{}", footer);
             }
