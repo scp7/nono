@@ -216,7 +216,13 @@ pub struct SandboxArgs {
     // === Directory permissions (recursive) ===
     /// Directories to allow read+write access (recursive).
     /// Combines full read and write permissions (see --read and --write for details).
-    #[arg(long, short = 'a', value_name = "DIR")]
+    #[arg(
+        long,
+        short = 'a',
+        value_name = "DIR",
+        env = "NONO_ALLOW",
+        value_delimiter = ','
+    )]
     pub allow: Vec<PathBuf>,
 
     /// Directories to allow read-only access (recursive)
@@ -245,7 +251,13 @@ pub struct SandboxArgs {
     pub write_file: Vec<PathBuf>,
 
     /// Block network access (network allowed by default; use this flag to block)
-    #[arg(long, conflicts_with = "net_allow")]
+    #[arg(
+        long,
+        conflicts_with = "net_allow",
+        env = "NONO_NET_BLOCK",
+        value_parser = clap::builder::BoolishValueParser::new(),
+        action = clap::ArgAction::SetTrue
+    )]
     pub net_block: bool,
 
     /// Allow unrestricted network access, even when a selected profile enables
@@ -253,6 +265,9 @@ pub struct SandboxArgs {
     /// for the current session only.
     #[arg(
         long,
+        env = "NONO_NET_ALLOW",
+        value_parser = clap::builder::BoolishValueParser::new(),
+        action = clap::ArgAction::SetTrue,
         conflicts_with_all = [
             "net_block",
             "network_profile",
@@ -267,7 +282,7 @@ pub struct SandboxArgs {
     // === Network proxy filtering ===
     /// Enable network proxy filtering with a named profile (e.g., claude-code, minimal, enterprise).
     /// When set, outbound network is restricted to hosts in the profile's allowlist.
-    #[arg(long, value_name = "PROFILE")]
+    #[arg(long, value_name = "PROFILE", env = "NONO_NETWORK_PROFILE")]
     pub network_profile: Option<String>,
 
     /// Allow additional hosts through the proxy (on top of network profile).
@@ -333,14 +348,14 @@ pub struct SandboxArgs {
     /// For network API keys, prefer --proxy-credential for credential isolation.
     /// Comma-separated entries: keyring names (auto-uppercased to env var) or
     /// 1Password URIs with explicit var (op://vault/item/field=MY_VAR).
-    #[arg(long, value_name = "CREDENTIALS")]
+    #[arg(long, value_name = "CREDENTIALS", env = "NONO_ENV_CREDENTIAL")]
     pub env_credential: Option<String>,
 
     // === Profile options ===
     /// Use a profile by name or file path.
     /// Names resolve from ~/.config/nono/profiles/ then built-ins.
     /// Paths (containing '/' or ending in .json) load directly.
-    #[arg(long, short = 'p', value_name = "NAME_OR_PATH")]
+    #[arg(long, short = 'p', value_name = "NAME_OR_PATH", env = "NONO_PROFILE")]
     pub profile: Option<String>,
 
     /// Allow access to current working directory without prompting.
@@ -1393,6 +1408,106 @@ mod tests {
         match cli.command {
             Commands::Run(args) => {
                 assert_eq!(args.sandbox.allow_port, vec![3000, 5000]);
+            }
+            _ => panic!("Expected Run command"),
+        }
+    }
+
+    #[test]
+    fn test_env_nono_allow() {
+        let saved = std::env::var("NONO_ALLOW").ok();
+        std::env::set_var("NONO_ALLOW", "/tmp/a,/tmp/b");
+        let cli = Cli::parse_from(["nono", "run", "echo"]);
+        // Restore immediately
+        match saved {
+            Some(v) => std::env::set_var("NONO_ALLOW", v),
+            None => std::env::remove_var("NONO_ALLOW"),
+        }
+        match cli.command {
+            Commands::Run(args) => {
+                assert_eq!(args.sandbox.allow.len(), 2);
+                assert_eq!(args.sandbox.allow[0], PathBuf::from("/tmp/a"));
+                assert_eq!(args.sandbox.allow[1], PathBuf::from("/tmp/b"));
+            }
+            _ => panic!("Expected Run command"),
+        }
+    }
+
+    #[test]
+    fn test_env_nono_net_block() {
+        let saved = std::env::var("NONO_NET_BLOCK").ok();
+        std::env::set_var("NONO_NET_BLOCK", "1");
+        let cli = Cli::parse_from(["nono", "run", "--allow", ".", "echo"]);
+        match saved {
+            Some(v) => std::env::set_var("NONO_NET_BLOCK", v),
+            None => std::env::remove_var("NONO_NET_BLOCK"),
+        }
+        match cli.command {
+            Commands::Run(args) => {
+                assert!(args.sandbox.net_block);
+            }
+            _ => panic!("Expected Run command"),
+        }
+    }
+
+    #[test]
+    fn test_env_nono_profile() {
+        let saved = std::env::var("NONO_PROFILE").ok();
+        std::env::set_var("NONO_PROFILE", "developer");
+        let cli = Cli::parse_from(["nono", "run", "--allow", ".", "echo"]);
+        match saved {
+            Some(v) => std::env::set_var("NONO_PROFILE", v),
+            None => std::env::remove_var("NONO_PROFILE"),
+        }
+        match cli.command {
+            Commands::Run(args) => {
+                assert_eq!(args.sandbox.profile.as_deref(), Some("developer"));
+            }
+            _ => panic!("Expected Run command"),
+        }
+    }
+
+    #[test]
+    fn test_env_nono_env_credential() {
+        let saved = std::env::var("NONO_ENV_CREDENTIAL").ok();
+        std::env::set_var("NONO_ENV_CREDENTIAL", "key1,key2");
+        let cli = Cli::parse_from(["nono", "run", "--allow", ".", "echo"]);
+        match saved {
+            Some(v) => std::env::set_var("NONO_ENV_CREDENTIAL", v),
+            None => std::env::remove_var("NONO_ENV_CREDENTIAL"),
+        }
+        match cli.command {
+            Commands::Run(args) => {
+                assert_eq!(args.sandbox.env_credential.as_deref(), Some("key1,key2"));
+            }
+            _ => panic!("Expected Run command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_flag_overrides_env() {
+        let saved = std::env::var("NONO_PROFILE").ok();
+        std::env::set_var("NONO_PROFILE", "from-env");
+        let cli = Cli::parse_from([
+            "nono",
+            "run",
+            "--allow",
+            ".",
+            "--profile",
+            "from-cli",
+            "echo",
+        ]);
+        match saved {
+            Some(v) => std::env::set_var("NONO_PROFILE", v),
+            None => std::env::remove_var("NONO_PROFILE"),
+        }
+        match cli.command {
+            Commands::Run(args) => {
+                assert_eq!(
+                    args.sandbox.profile.as_deref(),
+                    Some("from-cli"),
+                    "CLI flag should override env var"
+                );
             }
             _ => panic!("Expected Run command"),
         }

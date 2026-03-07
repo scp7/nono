@@ -895,6 +895,40 @@ nono run \
   -- my-agent --arg1 --arg2
 ```
 
+## Environment Variables
+
+Several CLI flags can be set via environment variables. This is useful in CI/CD pipelines, container entrypoints, and wrapper scripts where setting env vars is more natural than modifying command arguments.
+
+CLI flags always take precedence over environment variables.
+
+| Flag | Environment Variable | Example |
+|------|---------------------|---------|
+| `--allow` | `NONO_ALLOW` | `NONO_ALLOW=/tmp/a,/tmp/b` (comma-separated) |
+| `--net-block` | `NONO_NET_BLOCK` | `NONO_NET_BLOCK=true` |
+| `--net-allow` | `NONO_NET_ALLOW` | `NONO_NET_ALLOW=true` |
+| `--profile` | `NONO_PROFILE` | `NONO_PROFILE=developer` |
+| `--network-profile` | `NONO_NETWORK_PROFILE` | `NONO_NETWORK_PROFILE=claude-code` |
+| `--env-credential` | `NONO_ENV_CREDENTIAL` | `NONO_ENV_CREDENTIAL=key1,key2` |
+
+Boolean variables accept `true`, `false`, `yes`, `no`, `1`, `0`.
+
+Conflict rules apply equally whether the value comes from a flag or an environment variable. For example, setting both `NONO_NET_ALLOW=true` and `NONO_NET_BLOCK=true` is an error, just like passing both `--net-allow` and `--net-block`.
+
+```bash
+# CI/CD example: configure nono via environment
+export NONO_PROFILE=developer
+export NONO_ALLOW=/workspace
+export NONO_NET_BLOCK=true
+nono run -- cargo build
+```
+
+### Existing environment variables
+
+| Variable | Description |
+|----------|-------------|
+| `NONO_NO_UPDATE_CHECK` | Disable automatic update checks |
+| `NONO_UPDATE_URL` | Custom update service URL |
+
 ## Examples
 
 See the [Examples](/cli/usage/examples) page for common usage patterns.
