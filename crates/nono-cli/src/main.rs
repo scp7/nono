@@ -346,6 +346,7 @@ fn run_why(args: WhyArgs) -> Result<()> {
             proxy_allow: vec![],
             proxy_credential: vec![],
             external_proxy: None,
+            external_proxy_bypass: vec![],
             override_deny: vec![],
             allow_command: vec![],
             block_command: vec![],
@@ -381,6 +382,7 @@ fn run_why(args: WhyArgs) -> Result<()> {
             proxy_allow: vec![],
             proxy_credential: vec![],
             external_proxy: None,
+            external_proxy_bypass: vec![],
             override_deny: vec![],
             allow_command: vec![],
             block_command: vec![],
@@ -454,6 +456,7 @@ fn run_sandbox(run_args: RunArgs, silent: bool) -> Result<()> {
     // Dry run mode - just show what would happen
     if args.dry_run {
         let prepared = prepare_sandbox(&args, silent)?;
+        validate_external_proxy_bypass(&args, &prepared)?;
         if !prepared.secrets.is_empty() && !silent {
             eprintln!(
                 "  Would inject {} credential(s) as environment variables",
@@ -564,6 +567,32 @@ fn run_sandbox(run_args: RunArgs, silent: bool) -> Result<()> {
     let proxy_allow_hosts = effective_proxy.proxy_allow_hosts;
     let proxy_credentials = effective_proxy.proxy_credentials;
 
+    // Resolve effective external proxy: --net-allow clears it (same as other
+    // proxy settings), otherwise CLI overrides profile.
+    let effective_external_proxy = if args.net_allow {
+        None
+    } else {
+        args.external_proxy
+            .clone()
+            .or_else(|| prepared.external_proxy.clone())
+    };
+
+    // Resolve effective bypass hosts: cleared by --net-allow, otherwise
+    // CLI --external-proxy wins (use CLI bypass only), otherwise merge
+    // profile + CLI bypass hosts.
+    let effective_bypass = if args.net_allow {
+        Vec::new()
+    } else if args.external_proxy.is_some() {
+        args.external_proxy_bypass.clone()
+    } else {
+        let mut bypass = prepared.external_proxy_bypass.clone();
+        bypass.extend(args.external_proxy_bypass.clone());
+        bypass
+    };
+
+    // Validate: bypass hosts require an external proxy (from CLI or profile)
+    validate_external_proxy_bypass(&args, &prepared)?;
+
     // The proxy is needed when the network mode is ProxyOnly OR when there are
     // credential routes to inject. However, --net-block takes precedence: if
     // network is explicitly blocked, the proxy must NOT activate since that
@@ -572,6 +601,7 @@ fn run_sandbox(run_args: RunArgs, silent: bool) -> Result<()> {
         if !proxy_credentials.is_empty()
             || network_profile.is_some()
             || !proxy_allow_hosts.is_empty()
+            || effective_external_proxy.is_some()
         {
             warn!(
                 "--net-block is active; ignoring proxy configuration \
@@ -592,6 +622,7 @@ fn run_sandbox(run_args: RunArgs, silent: bool) -> Result<()> {
         ) || !proxy_credentials.is_empty()
             || network_profile.is_some()
             || !proxy_allow_hosts.is_empty()
+            || effective_external_proxy.is_some()
     };
 
     // Split --rollback-exclude values: glob metacharacters route to filename
@@ -646,7 +677,8 @@ fn run_sandbox(run_args: RunArgs, silent: bool) -> Result<()> {
             proxy_allow_hosts,
             proxy_credentials,
             custom_credentials: prepared.custom_credentials,
-            external_proxy: args.external_proxy.clone(),
+            external_proxy: effective_external_proxy,
+            external_proxy_bypass: effective_bypass,
             allow_bind_ports: args.allow_bind,
             proxy_port: args.proxy_port,
         },
@@ -713,10 +745,12 @@ fn run_wrap(wrap_args: WrapArgs, silent: bool) -> Result<()> {
         || !args.proxy_allow.is_empty()
         || !args.proxy_credential.is_empty()
         || args.external_proxy.is_some()
+        || !args.external_proxy_bypass.is_empty()
     {
         return Err(NonoError::ConfigParse(
             "nono wrap does not support proxy flags (--network-profile, --proxy-allow, \
-             --proxy-credential, --external-proxy). Use `nono run` instead."
+             --proxy-credential, --external-proxy, --external-proxy-bypass). \
+             Use `nono run` instead."
                 .to_string(),
         ));
     }
@@ -742,6 +776,22 @@ fn run_wrap(wrap_args: WrapArgs, silent: bool) -> Result<()> {
     }
 
     let prepared = prepare_sandbox(&args, silent)?;
+
+    // Also reject proxy flags that came from the profile (not just CLI).
+    // Profile-provided external_proxy / network settings activate ProxyOnly
+    // mode, which requires a parent process that wrap doesn't provide.
+    if prepared.external_proxy.is_some()
+        || matches!(
+            prepared.caps.network_mode(),
+            nono::NetworkMode::ProxyOnly { .. }
+        )
+    {
+        return Err(NonoError::ConfigParse(
+            "nono wrap does not support proxy mode (activated by profile network settings). \
+             Use `nono run` instead."
+                .to_string(),
+        ));
+    }
 
     execute_sandboxed(
         program,
@@ -797,6 +847,8 @@ struct ExecutionFlags {
     custom_credentials: std::collections::HashMap<String, profile::CustomCredentialDef>,
     /// External proxy address (from --external-proxy)
     external_proxy: Option<String>,
+    /// Hosts to bypass the external proxy (from --external-proxy-bypass)
+    external_proxy_bypass: Vec<String>,
     /// Ports the sandboxed process is allowed to bind (from --allow-bind)
     allow_bind_ports: Vec<u16>,
     /// Fixed port for the credential proxy (from --proxy-port)
@@ -832,6 +884,7 @@ impl ExecutionFlags {
             proxy_credentials: Vec::new(),
             custom_credentials: std::collections::HashMap::new(),
             external_proxy: None,
+            external_proxy_bypass: Vec::new(),
             allow_bind_ports: Vec::new(),
             proxy_port: None,
         })
@@ -875,6 +928,23 @@ fn resolve_effective_proxy_settings(
         proxy_allow_hosts,
         proxy_credentials,
     }
+}
+
+/// Validate that bypass hosts are not specified without an external proxy.
+/// Called from both the dry-run and live execution paths.
+fn validate_external_proxy_bypass(args: &SandboxArgs, prepared: &PreparedSandbox) -> Result<()> {
+    let has_bypass =
+        !args.external_proxy_bypass.is_empty() || !prepared.external_proxy_bypass.is_empty();
+    let has_external_proxy = args.external_proxy.is_some() || prepared.external_proxy.is_some();
+
+    if has_bypass && !has_external_proxy {
+        return Err(NonoError::ConfigParse(
+            "--external-proxy-bypass requires --external-proxy \
+             (or external_proxy in profile network config)"
+                .to_string(),
+        ));
+    }
+    Ok(())
 }
 
 /// Apply sandbox pre-fork for Direct mode (both parent+child confined).
@@ -943,6 +1013,7 @@ fn build_proxy_config_from_flags(
         proxy_config.external_proxy = Some(nono_proxy::config::ExternalProxyConfig {
             address: addr.clone(),
             auth: None,
+            bypass_hosts: flags.external_proxy_bypass.clone(),
         });
     }
 
@@ -1494,6 +1565,10 @@ struct PreparedSandbox {
     proxy_credentials: Vec<String>,
     /// Custom credential definitions from profile config
     custom_credentials: std::collections::HashMap<String, profile::CustomCredentialDef>,
+    /// External proxy address from profile config (if any)
+    external_proxy: Option<String>,
+    /// Bypass hosts for external proxy from profile config
+    external_proxy_bypass: Vec<String>,
     /// Whether the profile enables runtime capability elevation (seccomp-notify + PTY)
     capability_elevation: bool,
 }
@@ -1584,6 +1659,13 @@ fn prepare_sandbox(args: &SandboxArgs, silent: bool) -> Result<PreparedSandbox> 
     let profile_custom_credentials = loaded_profile
         .as_ref()
         .map(|p| p.network.custom_credentials.clone())
+        .unwrap_or_default();
+    let profile_external_proxy = loaded_profile
+        .as_ref()
+        .and_then(|p| p.network.external_proxy.clone());
+    let profile_external_proxy_bypass = loaded_profile
+        .as_ref()
+        .map(|p| p.network.external_proxy_bypass.clone())
         .unwrap_or_default();
 
     // On Linux, pre-create paths that the claude-code profile grants but
@@ -1784,6 +1866,8 @@ fn prepare_sandbox(args: &SandboxArgs, silent: bool) -> Result<PreparedSandbox> 
         proxy_allow_hosts: profile_proxy_allow,
         proxy_credentials: profile_proxy_credentials,
         custom_credentials: profile_custom_credentials,
+        external_proxy: profile_external_proxy,
+        external_proxy_bypass: profile_external_proxy_bypass,
         capability_elevation,
     })
 }
@@ -1919,6 +2003,7 @@ mod tests {
             proxy_allow: vec![],
             proxy_credential: vec![],
             external_proxy: None,
+            external_proxy_bypass: vec![],
             override_deny: vec![],
             allow_command: vec![],
             block_command: vec![],
@@ -2027,6 +2112,8 @@ mod tests {
             proxy_allow_hosts: vec!["docs.python.org".to_string()],
             proxy_credentials: vec!["github".to_string()],
             custom_credentials: std::collections::HashMap::new(),
+            external_proxy: None,
+            external_proxy_bypass: Vec::new(),
             capability_elevation: false,
         };
 
@@ -2059,6 +2146,8 @@ mod tests {
             proxy_allow_hosts: vec!["docs.python.org".to_string()],
             proxy_credentials: vec!["github".to_string()],
             custom_credentials: std::collections::HashMap::new(),
+            external_proxy: None,
+            external_proxy_bypass: Vec::new(),
             capability_elevation: false,
         };
 
