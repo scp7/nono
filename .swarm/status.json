@@ -5,5 +5,5 @@
   "task": "## GitHub Issue: always-further/nono#98\n\nFeature request: integrate with gh-aw-firewall - limit app access to internet\n\nI'd like to be able to granularly limit the websites my isolated application or an agent is allowed to access, for example, by proxying network traffic via gh-aw-firewall via CLI or container.\n\nThis leverages Squid proxy with granular HTTP traffic filtering capable of blocking individual blocks of an HTML page.\n\nhttps://github.com/github/gh-aw-firewall/blob/main/docs/quickstart.md\n\n\n\nenhancement\n\nWe have a plan emerging for this, landlock will shutdown access to everything apart from localhost where a proxy will run in a parent process , I have the worked deferred until the core library comes in around a week or so. \n---\nProxy has delivered this capability. Keeping this open as would like to explore how nono+proxy can be used to deliver github actions\n---\n@scp7 would you be so kind as to provide an example on how I can configure and utilize a proxy with nono to granularly filter HTTP traffic?\nFor example if I wanted to remove JS code or images from a web page, so my agent would not have access to those.\n\n---\n\nAssess and see if issue has been fixed",
   "revision": 0,
   "repo_url": "git@github.com:scp7/nono-copy",
-  "pr_url": ""
+  "pr_url": "https://github.com/scp7/nono/pull/3"
 }
