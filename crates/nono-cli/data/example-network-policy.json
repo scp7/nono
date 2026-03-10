@@ -1,0 +1,10 @@
+{
+  "allow_domains": [
+    "*.example.com",
+    "safe-site.org"
+  ],
+  "block_content_types": [
+    "image/*",
+    "application/javascript"
+  ]
+}
