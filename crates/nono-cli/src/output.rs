@@ -171,7 +171,7 @@ pub fn print_abi_info(silent: bool) {
     match nono::Sandbox::detect_abi() {
         Ok(detected) => {
             let features = detected.feature_names();
-            let feature_summary: Vec<&str> = features.iter().skip(1).copied().collect();
+            let feature_summary: Vec<&str> = features.iter().skip(1).map(|s| s.as_str()).collect();
             if feature_summary.is_empty() {
                 eprintln!("  {} {}", "Sandbox:".white(), detected.to_string().green(),);
             } else {
@@ -183,23 +183,20 @@ pub fn print_abi_info(silent: bool) {
                 );
             }
 
-            // Show what's missing when ABI < V5
-            let mut missing = Vec::new();
-            if !detected.has_refer() {
-                missing.push("Refer");
-            }
-            if !detected.has_truncate() {
-                missing.push("Truncate");
-            }
-            if !detected.has_network() {
-                missing.push("TCP filtering");
-            }
-            if !detected.has_ioctl_dev() {
-                missing.push("IoctlDev");
-            }
-            if !detected.has_scoping() {
-                missing.push("Scoping");
-            }
+            // Show what's missing on degraded ABI versions
+            const ALL_FEATURES: &[(&str, fn(&nono::DetectedAbi) -> bool)] = &[
+                ("Refer", nono::DetectedAbi::has_refer),
+                ("Truncate", nono::DetectedAbi::has_truncate),
+                ("TCP filtering", nono::DetectedAbi::has_network),
+                ("IoctlDev", nono::DetectedAbi::has_ioctl_dev),
+                ("Scoping", nono::DetectedAbi::has_scoping),
+            ];
+
+            let missing: Vec<&str> = ALL_FEATURES
+                .iter()
+                .filter(|(_, check)| !check(&detected))
+                .map(|(name, _)| *name)
+                .collect();
             if !missing.is_empty() {
                 eprintln!(
                     "  {}",

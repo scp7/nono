@@ -571,6 +571,9 @@ mod tests {
     fn test_detected_abi_has_network_for_v4_plus() {
         let detected = nono::DetectedAbi::new(landlock::ABI::V4);
         assert!(detected.has_network());
-        assert!(detected.feature_names().contains(&"TCP network filtering"));
+        assert!(detected
+            .feature_names()
+            .iter()
+            .any(|n| n.starts_with("TCP network filtering")));
     }
 }

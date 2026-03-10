@@ -72,23 +72,29 @@ impl DetectedAbi {
     }
 
     /// Return a list of available feature names at this ABI level.
+    ///
+    /// Each feature includes the specific Landlock flags in parentheses
+    /// for consistency and debuggability.
     #[must_use]
-    pub fn feature_names(&self) -> Vec<&'static str> {
-        let mut features = vec!["Basic filesystem access control"];
+    pub fn feature_names(&self) -> Vec<String> {
+        let mut features = vec!["Basic filesystem access control".to_string()];
         if self.has_refer() {
-            features.push("File rename across directories (Refer)");
+            features.push("File rename across directories (Refer)".to_string());
         }
         if self.has_truncate() {
-            features.push("File truncation (Truncate)");
+            features.push("File truncation (Truncate)".to_string());
         }
         if self.has_network() {
-            features.push("TCP network filtering");
+            features.push(format!(
+                "TCP network filtering ({:?})",
+                AccessNet::from_all(self.abi)
+            ));
         }
         if self.has_ioctl_dev() {
-            features.push("Device ioctl filtering (IoctlDev)");
+            features.push("Device ioctl filtering (IoctlDev)".to_string());
         }
         if self.has_scoping() {
-            features.push("Process scoping (signals and abstract UNIX sockets)");
+            features.push(format!("Process scoping ({:?})", Scope::from_all(self.abi)));
         }
         features
     }
@@ -171,7 +177,7 @@ pub fn is_supported() -> bool {
 pub fn support_info() -> SupportInfo {
     match detect_abi() {
         Ok(detected) => {
-            let features: Vec<&str> = detected.feature_names();
+            let features = detected.feature_names();
             SupportInfo {
                 is_supported: true,
                 platform: "linux",
@@ -191,10 +197,19 @@ pub fn support_info() -> SupportInfo {
     }
 }
 
+/// Result of converting AccessMode to Landlock flags, including any dropped flags.
+struct LandlockAccess {
+    /// Flags that will be applied (supported by this ABI).
+    effective: BitFlags<AccessFs>,
+    /// Flags that were requested but not supported by this ABI.
+    dropped: BitFlags<AccessFs>,
+}
+
 /// Convert AccessMode to Landlock AccessFs flags, intersected with ABI support.
 ///
-/// Flags unsupported by the detected ABI are silently dropped (with a warning
-/// logged via `tracing`). This prevents `BestEffort` from hiding degradation.
+/// Returns both the effective flags and any dropped flags so the caller can
+/// emit warnings with path context. This prevents `BestEffort` from hiding
+/// degradation.
 ///
 /// RemoveFile, RemoveDir, Truncate, and Refer are included to support atomic
 /// writes (write to .tmp -> rename to target), which is the standard pattern
@@ -204,7 +219,7 @@ pub fn support_info() -> SupportInfo {
 /// only for paths that are actual device files (char/block devices), detected
 /// via `stat()` at rule-addition time. This avoids granting device ioctl access
 /// to non-device paths.
-fn access_to_landlock(access: AccessMode, abi: ABI) -> BitFlags<AccessFs> {
+fn access_to_landlock(access: AccessMode, abi: ABI) -> LandlockAccess {
     let available = AccessFs::from_all(abi);
 
     let desired = match access {
@@ -224,21 +239,19 @@ fn access_to_landlock(access: AccessMode, abi: ABI) -> BitFlags<AccessFs> {
                 | AccessFs::Truncate
         }
         AccessMode::ReadWrite => {
-            access_to_landlock(AccessMode::Read, abi) | access_to_landlock(AccessMode::Write, abi)
+            let read = access_to_landlock(AccessMode::Read, abi);
+            let write = access_to_landlock(AccessMode::Write, abi);
+            return LandlockAccess {
+                effective: read.effective | write.effective,
+                dropped: read.dropped | write.dropped,
+            };
         }
     };
 
-    let effective = desired & available;
-    let dropped = desired & !available;
-
-    if !dropped.is_empty() {
-        warn!(
-            "Landlock ABI {:?} does not support: {:?} (requested for {:?})",
-            abi, dropped, access
-        );
+    LandlockAccess {
+        effective: desired & available,
+        dropped: desired & !available,
     }
-
-    effective
 }
 
 /// Check if a path is a character or block device file.
@@ -416,7 +429,18 @@ pub fn apply_with_abi(caps: &CapabilitySet, abi: &DetectedAbi) -> Result<()> {
     let ioctl_dev_available = AccessFs::from_all(target_abi).contains(AccessFs::IoctlDev);
 
     for cap in caps.fs_capabilities() {
-        let mut access = access_to_landlock(cap.access, target_abi);
+        let result = access_to_landlock(cap.access, target_abi);
+        let mut access = result.effective;
+
+        if !result.dropped.is_empty() {
+            warn!(
+                "Landlock ABI {:?} does not support {:?} for path {} (requested for {:?})",
+                target_abi,
+                result.dropped,
+                cap.resolved.display(),
+                cap.access
+            );
+        }
 
         // Grant IoctlDev only for device files and device directories (under /dev).
         // Terminal ioctls (TCSETS, TIOCGWINSZ) require this flag on V5+ kernels.
@@ -1159,26 +1183,29 @@ mod tests {
         let abi = ABI::V3;
 
         let read = access_to_landlock(AccessMode::Read, abi);
-        assert!(read.contains(AccessFs::ReadFile));
-        assert!(!read.contains(AccessFs::WriteFile));
+        assert!(read.effective.contains(AccessFs::ReadFile));
+        assert!(!read.effective.contains(AccessFs::WriteFile));
+        assert!(read.dropped.is_empty());
 
         let write = access_to_landlock(AccessMode::Write, abi);
-        assert!(write.contains(AccessFs::WriteFile));
-        assert!(!write.contains(AccessFs::ReadFile));
+        assert!(write.effective.contains(AccessFs::WriteFile));
+        assert!(!write.effective.contains(AccessFs::ReadFile));
         // V3 supports Refer and Truncate but NOT IoctlDev
-        assert!(write.contains(AccessFs::RemoveFile));
-        assert!(write.contains(AccessFs::RemoveDir));
-        assert!(write.contains(AccessFs::Refer));
-        assert!(write.contains(AccessFs::Truncate));
-        assert!(!write.contains(AccessFs::IoctlDev));
+        assert!(write.effective.contains(AccessFs::RemoveFile));
+        assert!(write.effective.contains(AccessFs::RemoveDir));
+        assert!(write.effective.contains(AccessFs::Refer));
+        assert!(write.effective.contains(AccessFs::Truncate));
+        assert!(!write.effective.contains(AccessFs::IoctlDev));
+        assert!(write.dropped.is_empty());
 
         let rw = access_to_landlock(AccessMode::ReadWrite, abi);
-        assert!(rw.contains(AccessFs::ReadFile));
-        assert!(rw.contains(AccessFs::WriteFile));
-        assert!(rw.contains(AccessFs::RemoveFile));
-        assert!(rw.contains(AccessFs::RemoveDir));
-        assert!(rw.contains(AccessFs::Refer));
-        assert!(rw.contains(AccessFs::Truncate));
+        assert!(rw.effective.contains(AccessFs::ReadFile));
+        assert!(rw.effective.contains(AccessFs::WriteFile));
+        assert!(rw.effective.contains(AccessFs::RemoveFile));
+        assert!(rw.effective.contains(AccessFs::RemoveDir));
+        assert!(rw.effective.contains(AccessFs::Refer));
+        assert!(rw.effective.contains(AccessFs::Truncate));
+        assert!(rw.dropped.is_empty());
     }
 
     #[test]
@@ -1186,14 +1213,17 @@ mod tests {
         let abi = ABI::V1;
 
         let write = access_to_landlock(AccessMode::Write, abi);
-        assert!(write.contains(AccessFs::WriteFile));
+        assert!(write.effective.contains(AccessFs::WriteFile));
         // V1 does NOT have Refer, Truncate, or IoctlDev
-        assert!(!write.contains(AccessFs::Refer));
-        assert!(!write.contains(AccessFs::Truncate));
-        assert!(!write.contains(AccessFs::IoctlDev));
+        assert!(!write.effective.contains(AccessFs::Refer));
+        assert!(!write.effective.contains(AccessFs::Truncate));
+        assert!(!write.effective.contains(AccessFs::IoctlDev));
         // But basic write operations are still present
-        assert!(write.contains(AccessFs::RemoveFile));
-        assert!(write.contains(AccessFs::RemoveDir));
+        assert!(write.effective.contains(AccessFs::RemoveFile));
+        assert!(write.effective.contains(AccessFs::RemoveDir));
+        // Dropped flags should be reported
+        assert!(write.dropped.contains(AccessFs::Refer));
+        assert!(write.dropped.contains(AccessFs::Truncate));
     }
 
     #[test]
@@ -1201,11 +1231,14 @@ mod tests {
         let abi = ABI::V2;
 
         let write = access_to_landlock(AccessMode::Write, abi);
-        assert!(write.contains(AccessFs::WriteFile));
+        assert!(write.effective.contains(AccessFs::WriteFile));
         // V2 added Refer but NOT Truncate or IoctlDev
-        assert!(write.contains(AccessFs::Refer));
-        assert!(!write.contains(AccessFs::Truncate));
-        assert!(!write.contains(AccessFs::IoctlDev));
+        assert!(write.effective.contains(AccessFs::Refer));
+        assert!(!write.effective.contains(AccessFs::Truncate));
+        assert!(!write.effective.contains(AccessFs::IoctlDev));
+        // Truncate should be in dropped
+        assert!(write.dropped.contains(AccessFs::Truncate));
+        assert!(!write.dropped.contains(AccessFs::Refer));
     }
 
     #[test]
@@ -1215,13 +1248,13 @@ mod tests {
         // IoctlDev is NOT in the generic write flags — it is added selectively
         // at rule-addition time only for device paths (char/block devices).
         let write = access_to_landlock(AccessMode::Write, abi);
-        assert!(!write.contains(AccessFs::IoctlDev));
+        assert!(!write.effective.contains(AccessFs::IoctlDev));
 
         let rw = access_to_landlock(AccessMode::ReadWrite, abi);
-        assert!(!rw.contains(AccessFs::IoctlDev));
+        assert!(!rw.effective.contains(AccessFs::IoctlDev));
 
         let read = access_to_landlock(AccessMode::Read, abi);
-        assert!(!read.contains(AccessFs::IoctlDev));
+        assert!(!read.effective.contains(AccessFs::IoctlDev));
     }
 
     #[test]
@@ -1307,9 +1340,11 @@ mod tests {
 
         let v4 = DetectedAbi::new(ABI::V4);
         let names = v4.feature_names();
-        assert!(names.contains(&"TCP network filtering"));
-        assert!(names.contains(&"File rename across directories (Refer)"));
-        assert!(names.contains(&"File truncation (Truncate)"));
+        assert!(names.iter().any(|n| n.starts_with("TCP network filtering")));
+        assert!(names
+            .iter()
+            .any(|n| n == "File rename across directories (Refer)"));
+        assert!(names.iter().any(|n| n == "File truncation (Truncate)"));
     }
 
     #[test]
