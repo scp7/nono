@@ -4,11 +4,28 @@
 //! terminal palettes. Users select a theme via `--theme`, `NONO_THEME`
 //! env var, or `[ui] theme = "..."` in config.toml.
 
+use colored::Colorize;
 use std::sync::OnceLock;
 
 /// RGB color tuple
 #[derive(Debug, Clone, Copy)]
 pub struct Rgb(pub u8, pub u8, pub u8);
+
+/// Apply an Rgb color to text.
+pub fn fg(s: &str, c: Rgb) -> colored::ColoredString {
+    s.truecolor(c.0, c.1, c.2)
+}
+
+/// Apply an Rgb background + foreground.
+pub fn badge(label: &str, bg: Rgb, fg_color: Rgb) -> String {
+    format!(
+        "{}",
+        label
+            .on_truecolor(bg.0, bg.1, bg.2)
+            .truecolor(fg_color.0, fg_color.1, fg_color.2)
+            .bold()
+    )
+}
 
 /// A complete color theme for CLI output
 #[derive(Debug, Clone)]
@@ -202,10 +219,23 @@ pub fn available_themes() -> &'static [&'static str] {
 
 /// Check whether a theme name is recognized
 pub fn is_valid(name: &str) -> bool {
-    resolve(name).name != "mocha"
-        || name.to_lowercase() == "mocha"
-        || name.to_lowercase() == "catppuccin"
-        || name.to_lowercase() == "catppuccin-mocha"
+    matches!(
+        name.to_lowercase().as_str(),
+        "mocha"
+            | "catppuccin-mocha"
+            | "catppuccin"
+            | "latte"
+            | "catppuccin-latte"
+            | "frappe"
+            | "catppuccin-frappe"
+            | "macchiato"
+            | "catppuccin-macchiato"
+            | "tokyo-night"
+            | "tokyo"
+            | "tokyonight"
+            | "minimal"
+            | "plain"
+    )
 }
 
 #[cfg(test)]

@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 /// Prefix used for all audit command output
 fn prefix() -> colored::ColoredString {
     let t = theme::current();
-    "nono".truecolor(t.brand.0, t.brand.1, t.brand.2).bold()
+    theme::fg("nono", t.brand).bold()
 }
 
 /// Dispatch to the appropriate audit subcommand.
@@ -67,11 +67,7 @@ fn cmd_list(args: AuditListArgs) -> Result<()> {
                 "    {} {} {}",
                 s.metadata.session_id,
                 status,
-                cmd.truecolor(
-                    theme::current().subtext.0,
-                    theme::current().subtext.1,
-                    theme::current().subtext.2
-                ),
+                theme::fg(&cmd, theme::current().subtext),
             );
         }
         eprintln!();
@@ -214,10 +210,9 @@ fn cmd_show(args: AuditShowArgs) -> Result<()> {
     );
     eprintln!(
         "  Command:  {}",
-        session.metadata.command.join(" ").truecolor(
-            theme::current().subtext.0,
-            theme::current().subtext.1,
-            theme::current().subtext.2
+        theme::fg(
+            &session.metadata.command.join(" "),
+            theme::current().subtext
         )
     );
     eprintln!("  Started:  {}", session.metadata.started);
@@ -368,11 +363,7 @@ fn session_status_label(s: &SessionInfo) -> colored::ColoredString {
     } else if s.is_stale {
         "orphaned".yellow()
     } else {
-        "completed".truecolor(
-            theme::current().subtext.0,
-            theme::current().subtext.1,
-            theme::current().subtext.2,
-        )
+        theme::fg("completed", theme::current().subtext)
     }
 }
 
@@ -415,11 +406,7 @@ fn change_symbol(ct: &nono::undo::ChangeType) -> colored::ColoredString {
         nono::undo::ChangeType::Created => "+".green(),
         nono::undo::ChangeType::Modified => "~".yellow(),
         nono::undo::ChangeType::Deleted => "-".red(),
-        nono::undo::ChangeType::PermissionsChanged => "p".truecolor(
-            theme::current().subtext.0,
-            theme::current().subtext.1,
-            theme::current().subtext.2,
-        ),
+        nono::undo::ChangeType::PermissionsChanged => theme::fg("p", theme::current().subtext),
     }
 }
 

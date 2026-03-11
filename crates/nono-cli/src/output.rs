@@ -2,7 +2,7 @@
 //!
 //! All colors are drawn from the active theme via `theme::current()`.
 
-use crate::theme::{self, Rgb};
+use crate::theme::{self, Rgb, badge, fg};
 use colored::Colorize;
 use nono::{AccessMode, CapabilitySet, NetworkMode, NonoError, Result};
 use std::ffi::{OsStr, OsString};
@@ -13,29 +13,13 @@ use std::path::Path;
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Apply an Rgb color to text
-fn fg(s: &str, c: Rgb) -> colored::ColoredString {
-    s.truecolor(c.0, c.1, c.2)
-}
-
-/// Apply an Rgb background + foreground
-fn badge(label: &str, bg: Rgb, fg_color: Rgb) -> String {
-    format!(
-        "{}",
-        label
-            .on_truecolor(bg.0, bg.1, bg.2)
-            .truecolor(fg_color.0, fg_color.1, fg_color.2)
-            .bold()
-    )
-}
-
 /// Dark foreground for badge text (works on both light and dark bg colors)
 const BADGE_FG_DARK: Rgb = Rgb(30, 30, 46);
 
 /// Print a thin horizontal rule using overlay color
 fn rule() {
     let t = theme::current();
-    eprintln!("  {}", fg(&"\u{2500}".repeat(52), t.overlay));
+    eprintln!("  {}", theme::fg(&"\u{2500}".repeat(52), t.overlay));
 }
 
 // ---------------------------------------------------------------------------
@@ -54,8 +38,8 @@ pub fn print_banner(silent: bool) {
     eprintln!();
     eprintln!(
         "  {} {}",
-        fg("nono", t.brand).bold(),
-        fg(&format!("v{version}"), t.subtext),
+        theme::fg("nono", t.brand).bold(),
+        theme::fg(&format!("v{version}"), t.subtext),
     );
 }
 
@@ -101,15 +85,15 @@ pub fn print_capabilities(caps: &CapabilitySet, verbose: u8, silent: bool) {
                 eprintln!(
                     "  {} {} {}",
                     access_badge,
-                    fg(&cap.resolved.display().to_string(), t.text),
-                    fg(&format!("({kind}) [{source_str}]"), t.subtext),
+                    theme::fg(&cap.resolved.display().to_string(), t.text),
+                    theme::fg(&format!("({kind}) [{source_str}]"), t.subtext),
                 );
             } else {
                 eprintln!(
                     "  {} {} {}",
                     access_badge,
-                    fg(&cap.resolved.display().to_string(), t.text),
-                    fg(&format!("({kind})"), t.subtext),
+                    theme::fg(&cap.resolved.display().to_string(), t.text),
+                    theme::fg(&format!("({kind})"), t.subtext),
                 );
             }
         }
@@ -117,7 +101,7 @@ pub fn print_capabilities(caps: &CapabilitySet, verbose: u8, silent: bool) {
         if other_count > 0 {
             eprintln!(
                 "       {}",
-                fg(
+                theme::fg(
                     &format!("+ {other_count} system/group paths (-v to show)"),
                     t.subtext
                 )
@@ -130,23 +114,23 @@ pub fn print_capabilities(caps: &CapabilitySet, verbose: u8, silent: bool) {
         NetworkMode::Blocked => {
             eprintln!(
                 "  {} {}",
-                badge(" net ", t.red, BADGE_FG_DARK),
-                fg("outbound blocked", t.subtext),
+                theme::badge(" net ", t.red, BADGE_FG_DARK),
+                theme::fg("outbound blocked", t.subtext),
             );
         }
         NetworkMode::ProxyOnly { port, bind_ports } => {
             if bind_ports.is_empty() {
                 eprintln!(
                     "  {} {}",
-                    badge(" net ", t.yellow, BADGE_FG_DARK),
-                    fg(&format!("proxy localhost:{port}"), t.subtext),
+                    theme::badge(" net ", t.yellow, BADGE_FG_DARK),
+                    theme::fg(&format!("proxy localhost:{port}"), t.subtext),
                 );
             } else {
                 let ports_str: Vec<String> = bind_ports.iter().map(|p| p.to_string()).collect();
                 eprintln!(
                     "  {} {}",
-                    badge(" net ", t.yellow, BADGE_FG_DARK),
-                    fg(
+                    theme::badge(" net ", t.yellow, BADGE_FG_DARK),
+                    theme::fg(
                         &format!("proxy localhost:{port}, bind: {}", ports_str.join(", ")),
                         t.subtext,
                     ),
@@ -156,8 +140,8 @@ pub fn print_capabilities(caps: &CapabilitySet, verbose: u8, silent: bool) {
         NetworkMode::AllowAll => {
             eprintln!(
                 "  {} {}",
-                badge(" net ", t.green, BADGE_FG_DARK),
-                fg("outbound allowed", t.subtext),
+                theme::badge(" net ", t.green, BADGE_FG_DARK),
+                theme::fg("outbound allowed", t.subtext),
             );
         }
     }
@@ -169,8 +153,8 @@ pub fn print_capabilities(caps: &CapabilitySet, verbose: u8, silent: bool) {
             .collect();
         eprintln!(
             "  {} {}",
-            badge(" ipc ", t.teal, BADGE_FG_DARK),
-            fg(&format!("localhost:{}", ports_str.join(", ")), t.subtext,),
+            theme::badge(" ipc ", t.teal, BADGE_FG_DARK),
+            theme::fg(&format!("localhost:{}", ports_str.join(", ")), t.subtext,),
         );
     }
 
@@ -182,9 +166,9 @@ pub fn print_capabilities(caps: &CapabilitySet, verbose: u8, silent: bool) {
 fn format_access_badge(access: &AccessMode) -> String {
     let t = theme::current();
     match access {
-        AccessMode::Read => badge("  r  ", t.green, BADGE_FG_DARK),
-        AccessMode::Write => badge("  w  ", t.yellow, BADGE_FG_DARK),
-        AccessMode::ReadWrite => badge(" r+w ", t.brand, BADGE_FG_DARK),
+        AccessMode::Read => theme::badge("  r  ", t.green, BADGE_FG_DARK),
+        AccessMode::Write => theme::badge("  w  ", t.yellow, BADGE_FG_DARK),
+        AccessMode::ReadWrite => theme::badge(" r+w ", t.brand, BADGE_FG_DARK),
     }
 }
 
@@ -192,9 +176,9 @@ fn format_access_badge(access: &AccessMode) -> String {
 fn format_access_inline(access: &AccessMode) -> colored::ColoredString {
     let t = theme::current();
     match access {
-        AccessMode::Read => fg("read", t.green),
-        AccessMode::Write => fg("write", t.yellow),
-        AccessMode::ReadWrite => fg("read+write", t.brand),
+        AccessMode::Read => theme::fg("read", t.green),
+        AccessMode::Write => theme::fg("write", t.yellow),
+        AccessMode::ReadWrite => theme::fg("read+write", t.brand),
     }
 }
 

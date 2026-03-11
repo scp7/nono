@@ -57,7 +57,7 @@ fn canonical_candidates(path: &Path) -> Vec<PathBuf> {
 /// Prefix used for all rollback command output
 fn prefix() -> colored::ColoredString {
     let t = theme::current();
-    "nono".truecolor(t.brand.0, t.brand.1, t.brand.2).bold()
+    theme::fg("nono", t.brand).bold()
 }
 
 /// Dispatch to the appropriate rollback subcommand.
@@ -208,11 +208,7 @@ fn print_session_line(s: &SessionInfo, created: usize, modified: usize, deleted:
         "    {}  {}  {}  {}",
         s.metadata.session_id.white().bold(),
         timestamp.truecolor(100, 100, 100),
-        cmd_name.truecolor(
-            theme::current().subtext.0,
-            theme::current().subtext.1,
-            theme::current().subtext.2
-        ),
+        theme::fg(&cmd_name, theme::current().subtext),
         change_summary,
     );
 }
@@ -315,10 +311,9 @@ fn cmd_show(args: RollbackShowArgs) -> Result<()> {
         "{} Session {} ({})\n",
         prefix(),
         session.metadata.session_id.white().bold(),
-        session.metadata.command.join(" ").truecolor(
-            theme::current().subtext.0,
-            theme::current().subtext.1,
-            theme::current().subtext.2
+        theme::fg(
+            &session.metadata.command.join(" "),
+            theme::current().subtext
         )
     );
 

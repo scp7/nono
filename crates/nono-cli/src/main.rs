@@ -830,7 +830,7 @@ fn run_shell(args: ShellArgs, silent: bool) -> Result<()> {
     if !silent {
         eprintln!("{}", {
             let t = theme::current();
-            "Exit the shell with Ctrl-D or 'exit'.".truecolor(t.subtext.0, t.subtext.1, t.subtext.2)
+            theme::fg("Exit the shell with Ctrl-D or 'exit'.", t.subtext)
         });
         eprintln!();
     }
