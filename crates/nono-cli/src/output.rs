@@ -2,7 +2,7 @@
 //!
 //! All colors are drawn from the active theme via `theme::current()`.
 
-use crate::theme::{self, Rgb, badge, fg};
+use crate::theme::{self, badge, fg, Rgb};
 use colored::Colorize;
 use nono::{AccessMode, CapabilitySet, NetworkMode, NonoError, Result};
 use std::ffi::{OsStr, OsString};
