@@ -1519,12 +1519,12 @@ mod tests {
         let waited_sandbox = unsafe { libc::waitpid(sandbox_pid, &mut sandbox_status, 0) };
         assert_eq!(waited_sandbox, sandbox_pid, "waitpid() for sandbox failed");
         assert!(
-            unsafe { libc::WIFEXITED(sandbox_status) },
+            libc::WIFEXITED(sandbox_status),
             "sandbox child did not exit normally"
         );
         cleanup.sandbox_pid = None;
         assert_eq!(
-            unsafe { libc::WEXITSTATUS(sandbox_status) },
+            libc::WEXITSTATUS(sandbox_status),
             0,
             "sandbox child returned failure"
         );
