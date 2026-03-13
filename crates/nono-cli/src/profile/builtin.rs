@@ -244,4 +244,20 @@ mod tests {
 
         assert_eq!(default_rendered, base_rendered);
     }
+
+    #[test]
+    fn test_embedded_profiles_extend_default() {
+        let policy = crate::policy::load_embedded_policy().expect("load embedded policy");
+        for (name, def) in &policy.profiles {
+            if name == "default" {
+                continue;
+            }
+            assert_eq!(
+                def.extends.as_deref(),
+                Some("default"),
+                "embedded profile '{}' should extend default",
+                name
+            );
+        }
+    }
 }

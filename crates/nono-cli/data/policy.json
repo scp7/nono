@@ -597,6 +597,7 @@
       "interactive": false
     },
     "claude-code": {
+      "extends": "default",
       "meta": {
         "name": "claude-code",
         "version": "1.0.0",
@@ -649,6 +650,7 @@
       "interactive": true
     },
     "codex": {
+      "extends": "default",
       "meta": {
         "name": "codex",
         "version": "1.0.0",
@@ -683,6 +685,7 @@
       "interactive": true
     },
     "openclaw": {
+      "extends": "default",
       "meta": {
         "name": "openclaw",
         "version": "1.0.0",
@@ -710,6 +713,7 @@
       "interactive": false
     },
     "opencode": {
+      "extends": "default",
       "meta": {
         "name": "opencode",
         "version": "1.0.0",
@@ -737,6 +741,7 @@
       "interactive": true
     },
     "python-dev": {
+      "extends": "default",
       "meta": {
         "name": "python-dev",
         "version": "1.0.0",
@@ -754,6 +759,7 @@
       "interactive": false
     },
     "node-dev": {
+      "extends": "default",
       "meta": {
         "name": "node-dev",
         "version": "1.0.0",
@@ -771,6 +777,7 @@
       "interactive": false
     },
     "go-dev": {
+      "extends": "default",
       "meta": {
         "name": "go-dev",
         "version": "1.0.0",
@@ -788,6 +795,7 @@
       "interactive": false
     },
     "rust-dev": {
+      "extends": "default",
       "meta": {
         "name": "rust-dev",
         "version": "1.0.0",
@@ -805,6 +813,7 @@
       "interactive": false
     },
     "swival": {
+      "extends": "default",
       "meta": {
         "name": "swival",
         "version": "1.0.0",
