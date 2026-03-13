@@ -2026,12 +2026,18 @@ fn prepare_sandbox(args: &SandboxArgs, silent: bool) -> Result<PreparedSandbox> 
     // where deny-within-allow cannot be enforced.
     let active_groups = if let Some(ref prof) = loaded_profile {
         if prof.security.groups.is_empty() {
-            policy::base_groups()?
+            policy::get_policy_profile("default")?
+                .ok_or_else(|| NonoError::ProfileNotFound("default".to_string()))?
+                .security
+                .groups
         } else {
             prof.security.groups.clone()
         }
     } else {
-        policy::base_groups()?
+        policy::get_policy_profile("default")?
+            .ok_or_else(|| NonoError::ProfileNotFound("default".to_string()))?
+            .security
+            .groups
     };
     let loaded_policy = policy::load_embedded_policy()?;
     let deny_paths = policy::resolve_deny_paths_for_groups(&loaded_policy, &active_groups)?;
