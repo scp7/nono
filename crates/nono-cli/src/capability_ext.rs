@@ -369,16 +369,11 @@ impl CapabilitySetExt for CapabilitySet {
 fn finalize_caps(
     caps: &mut CapabilitySet,
     resolved: &mut policy::ResolvedGroups,
-    loaded_policy: &policy::Policy,
+    _loaded_policy: &policy::Policy,
     args: &SandboxArgs,
 ) -> Result<()> {
     // Apply deny overrides before validation (punch holes through deny groups)
-    policy::apply_deny_overrides(
-        &args.override_deny,
-        &mut resolved.deny_paths,
-        caps,
-        &loaded_policy.never_grant,
-    )?;
+    policy::apply_deny_overrides(&args.override_deny, &mut resolved.deny_paths, caps)?;
 
     // Validate deny/allow overlaps (hard-fail on Linux where Landlock cannot enforce denies)
     policy::validate_deny_overlaps(&resolved.deny_paths, caps)?;

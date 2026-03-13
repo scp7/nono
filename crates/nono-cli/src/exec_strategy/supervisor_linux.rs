@@ -69,7 +69,7 @@ impl RateLimiter {
 /// 1. Receive notification (blocking recv from kernel)
 /// 2. Read path from child's /proc/PID/mem
 /// 3. TOCTOU check: verify notification still valid
-/// 4. Check never_grant -> deny (BEFORE initial-set fast-path)
+/// 4. Check protected nono state roots -> deny (BEFORE initial-set fast-path)
 /// 5. Fast-path: if path is in initial set, open + inject fd immediately
 /// 6. Rate limit check -> deny if exceeded
 /// 7. Trust verification for instruction files (if trust_interceptor present)
@@ -188,31 +188,24 @@ pub(super) fn handle_seccomp_notification(
     let canonicalized =
         std::fs::canonicalize(&resolved_path).unwrap_or_else(|_| resolved_path.clone());
 
-    // 4. Check never_grant BEFORE initial-set fast-path.
-    let never_grant_check = config.never_grant.check(&canonicalized);
-    if !never_grant_check.is_blocked() {
-        let never_grant_original = config.never_grant.check(&resolved_path);
-        if never_grant_original.is_blocked() {
-            debug!(
-                "Seccomp: path {} (via {}) blocked by never_grant",
-                canonicalized.display(),
-                path.display()
-            );
-            record_denial(
-                denials,
-                DenialRecord {
-                    path: path.clone(),
-                    access,
-                    reason: DenialReason::PolicyBlocked,
-                },
-            );
-            let _ = deny_notif(notify_fd, notif.id);
-            return Ok(());
-        }
-    } else {
+    // 4. Check protected roots BEFORE initial-set fast-path.
+    let protected_root = crate::protected_paths::overlapping_protected_root(
+        &canonicalized,
+        false,
+        config.protected_roots,
+    )
+    .or_else(|| {
+        crate::protected_paths::overlapping_protected_root(
+            &resolved_path,
+            false,
+            config.protected_roots,
+        )
+    });
+    if let Some(protected_root) = protected_root {
         debug!(
-            "Seccomp: path {} blocked by never_grant",
-            canonicalized.display()
+            "Seccomp: path {} blocked by protected root {}",
+            canonicalized.display(),
+            protected_root.display()
         );
         record_denial(
             denials,
@@ -243,7 +236,7 @@ pub(super) fn handle_seccomp_notification(
             match open_path_for_access(
                 &path,
                 &access,
-                config.never_grant,
+                config.protected_roots,
                 None,
                 Some(procfs_context),
             ) {
@@ -424,7 +417,7 @@ pub(super) fn handle_seccomp_notification(
         match open_path_for_access(
             &path,
             &access,
-            config.never_grant,
+            config.protected_roots,
             verified_digest.as_deref(),
             Some(procfs_context),
         ) {

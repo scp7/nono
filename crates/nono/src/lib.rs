@@ -77,8 +77,7 @@ pub use sandbox::{detect_abi, DetectedAbi};
 pub use sandbox::{Sandbox, SupportInfo};
 pub use state::SandboxState;
 pub use supervisor::{
-    ApprovalBackend, ApprovalDecision, CapabilityRequest, NeverGrantChecker, SupervisorSocket,
-    UrlOpenRequest,
+    ApprovalBackend, ApprovalDecision, CapabilityRequest, SupervisorSocket, UrlOpenRequest,
 };
 pub use trust::{
     Enforcement, InstructionPatterns, Publisher, SignerIdentity, TrustPolicy, VerificationOutcome,

@@ -19,10 +19,6 @@ use tracing::{debug, warn};
 pub struct Policy {
     #[allow(dead_code)]
     pub meta: PolicyMeta,
-    /// Paths that can never be granted via supervisor IPC, regardless of user approval.
-    /// Consumed by `NeverGrantChecker` during supervisor orchestration.
-    #[serde(default)]
-    pub never_grant: Vec<String>,
     pub groups: HashMap<String, Group>,
     /// Built-in profile definitions
     #[serde(default)]
@@ -590,7 +586,7 @@ pub fn apply_macos_login_keychain_exception(caps: &mut CapabilitySet) {
 /// Apply deny overrides for specific paths, punching targeted holes through deny groups.
 ///
 /// For each override path:
-/// 1. Expands `~` and validates the path against `never_grant` (hard error if blocked)
+/// 1. Expands `~`
 /// 2. On macOS: emits Seatbelt allow rules more specific than the deny rules
 /// 3. Removes the path from `deny_paths` so Linux `validate_deny_overlaps` passes
 /// 4. Warns to stderr for each override applied (security relaxation must be visible)
@@ -601,43 +597,9 @@ pub fn apply_deny_overrides(
     overrides: &[std::path::PathBuf],
     deny_paths: &mut Vec<PathBuf>,
     caps: &mut CapabilitySet,
-    never_grant: &[String],
 ) -> Result<()> {
     if overrides.is_empty() {
         return Ok(());
-    }
-
-    // Expand and canonicalize never_grant paths for comparison.
-    // Expansion failures are fatal — a missing never_grant rule is a security bypass.
-    let mut never_grant_expanded: Vec<PathBuf> = Vec::with_capacity(never_grant.len());
-    for ng in never_grant {
-        let expanded = expand_path(ng).map_err(|e| {
-            NonoError::SandboxInit(format!(
-                "Failed to expand never_grant path '{}': {}. \
-                 Refusing to proceed — this could bypass security policy.",
-                ng, e
-            ))
-        })?;
-        // Canonicalize if the path exists to prevent symlink bypasses
-        // (e.g., override targets the canonical path while never_grant uses the symlink)
-        if expanded.exists() {
-            let canonical = expanded.canonicalize().map_err(|e| {
-                NonoError::SandboxInit(format!(
-                    "Failed to canonicalize never_grant path '{}': {}. \
-                     Refusing to proceed — this could bypass security policy.",
-                    expanded.display(),
-                    e
-                ))
-            })?;
-            // Keep both forms: canonical catches symlink bypasses,
-            // expanded catches non-canonical override paths
-            if canonical != expanded {
-                never_grant_expanded.push(expanded);
-            }
-            never_grant_expanded.push(canonical);
-        } else {
-            never_grant_expanded.push(expanded);
-        }
     }
 
     for override_path in overrides {
@@ -662,24 +624,6 @@ pub fn apply_deny_overrides(
         } else {
             expanded.clone()
         };
-
-        // Check against never_grant (hard error)
-        // Both directions: override is child of never_grant (e.g., ~/.ssh/id_rsa/foo)
-        // AND override is ancestor of never_grant (e.g., ~/.ssh covering ~/.ssh/id_rsa)
-        for ng_path in &never_grant_expanded {
-            if canonical.starts_with(ng_path)
-                || expanded.starts_with(ng_path)
-                || ng_path.starts_with(&canonical)
-                || ng_path.starts_with(&expanded)
-            {
-                return Err(NonoError::SandboxInit(format!(
-                    "Cannot override deny for '{}': path overlaps the never_grant list (matched '{}'). \
-                     This path is blocked for security reasons and cannot be overridden.",
-                    override_path.display(),
-                    ng_path.display(),
-                )));
-            }
-        }
 
         // Verify the override path is actually granted via --allow/--read/--write.
         // Without a grant, the deny removal is a no-op on Linux (Landlock is allow-list),
@@ -1660,7 +1604,7 @@ mod tests {
                     "Deny-within-allow overlap on Linux: deny '{}' (group: {}) \
                      is under or equal to allowed '{}' (group: {}). Landlock \
                      cannot enforce this. Narrow the allow path or move the \
-                     deny to never_grant.",
+                     deny into a separate explicit grant path.",
                     deny_path.display(),
                     deny_group,
                     allow_path.display(),
@@ -1844,37 +1788,6 @@ mod tests {
     }
 
     #[test]
-    fn test_system_read_linux_does_not_allow_never_grant_paths() {
-        let policy = load_embedded_policy().expect("embedded policy must parse");
-        let group = policy
-            .groups
-            .get("system_read_linux")
-            .expect("system_read_linux group must exist");
-        let read_paths = group
-            .allow
-            .as_ref()
-            .map(|a| a.read.as_slice())
-            .unwrap_or(&[]);
-
-        for never_grant_str in &policy.never_grant {
-            let never_grant_path = expand_path(never_grant_str)
-                .unwrap_or_else(|e| panic!("expand_path({never_grant_str}) failed: {e}"));
-            for allow_str in read_paths {
-                let allow_path = expand_path(allow_str)
-                    .unwrap_or_else(|e| panic!("expand_path({allow_str}) failed: {e}"));
-                assert!(
-                    !never_grant_path.starts_with(&allow_path),
-                    "system_read_linux allow.read entry '{}' (expanded: '{}') overlaps never_grant '{}' (expanded: '{}')",
-                    allow_str,
-                    allow_path.display(),
-                    never_grant_str,
-                    never_grant_path.display(),
-                );
-            }
-        }
-    }
-
-    #[test]
     fn test_apply_deny_overrides_removes_from_deny_paths() {
         let dir = tempfile::tempdir().expect("tmpdir");
         let denied = dir.path().join("denied");
@@ -1888,84 +1801,20 @@ mod tests {
         let mut deny_paths = vec![denied_canonical.clone(), other_canonical.clone()];
         let mut caps = CapabilitySet::new();
         caps.add_fs(FsCapability::new_dir(dir.path(), AccessMode::ReadWrite).expect("grant dir"));
-        let never_grant: Vec<String> = vec![];
-
         let overrides = vec![denied.clone()];
 
-        apply_deny_overrides(&overrides, &mut deny_paths, &mut caps, &never_grant)
-            .expect("should succeed");
+        apply_deny_overrides(&overrides, &mut deny_paths, &mut caps).expect("should succeed");
 
         assert_eq!(deny_paths.len(), 1);
         assert_eq!(deny_paths[0], other_canonical);
     }
 
     #[test]
-    fn test_apply_deny_overrides_rejects_never_grant() {
-        let mut deny_paths = vec![];
-        let mut caps = CapabilitySet::new();
-        let never_grant = vec!["~/.ssh/id_rsa".to_string()];
-
-        let home = std::env::var("HOME").expect("HOME must be set");
-        let overrides = vec![PathBuf::from(format!("{}/.ssh/id_rsa", home))];
-
-        let result = apply_deny_overrides(&overrides, &mut deny_paths, &mut caps, &never_grant);
-        assert!(result.is_err());
-        let err = result.expect_err("expected error");
-        assert!(
-            err.to_string().contains("never_grant"),
-            "error should mention never_grant, got: {}",
-            err
-        );
-    }
-
-    #[test]
-    fn test_apply_deny_overrides_rejects_never_grant_child() {
-        let mut deny_paths = vec![];
-        let mut caps = CapabilitySet::new();
-        let never_grant = vec!["~/.gnupg".to_string()];
-
-        let home = std::env::var("HOME").expect("HOME must be set");
-        // A child of a never_grant path should also be blocked
-        let overrides = vec![PathBuf::from(format!("{}/.gnupg/private-keys-v1.d", home))];
-
-        let result = apply_deny_overrides(&overrides, &mut deny_paths, &mut caps, &never_grant);
-        assert!(result.is_err());
-        let err = result.expect_err("expected error");
-        assert!(
-            err.to_string().contains("never_grant"),
-            "error should mention never_grant, got: {}",
-            err
-        );
-    }
-
-    #[test]
-    fn test_apply_deny_overrides_rejects_never_grant_ancestor() {
-        let mut deny_paths = vec![];
-        let mut caps = CapabilitySet::new();
-        let never_grant = vec!["~/.ssh/id_rsa".to_string(), "~/.ssh/id_ed25519".to_string()];
-
-        let home = std::env::var("HOME").expect("HOME must be set");
-        // An ancestor of a never_grant path should also be blocked —
-        // a subpath allow on ~/.ssh would expose ~/.ssh/id_rsa
-        let overrides = vec![PathBuf::from(format!("{}/.ssh", home))];
-
-        let result = apply_deny_overrides(&overrides, &mut deny_paths, &mut caps, &never_grant);
-        assert!(result.is_err());
-        let err = result.expect_err("expected error");
-        assert!(
-            err.to_string().contains("never_grant"),
-            "error should mention never_grant, got: {}",
-            err
-        );
-    }
-
-    #[test]
     fn test_apply_deny_overrides_empty_is_noop() {
         let mut deny_paths = vec![PathBuf::from("/tmp/denied")];
         let mut caps = CapabilitySet::new();
-        let never_grant: Vec<String> = vec![];
 
-        apply_deny_overrides(&[], &mut deny_paths, &mut caps, &never_grant)
+        apply_deny_overrides(&[], &mut deny_paths, &mut caps)
             .expect("empty overrides should succeed");
 
         assert_eq!(deny_paths.len(), 1, "deny_paths should be unchanged");
@@ -1980,12 +1829,9 @@ mod tests {
         caps.add_fs(
             FsCapability::new_dir(Path::new("/tmp"), AccessMode::ReadWrite).expect("grant /tmp"),
         );
-        let never_grant: Vec<String> = vec![];
-
         let overrides = vec![PathBuf::from("/tmp")];
 
-        apply_deny_overrides(&overrides, &mut deny_paths, &mut caps, &never_grant)
-            .expect("should succeed");
+        apply_deny_overrides(&overrides, &mut deny_paths, &mut caps).expect("should succeed");
 
         let rules = caps.platform_rules().join("\n");
         assert!(
@@ -2019,12 +1865,9 @@ mod tests {
         let mut deny_paths = vec![dir_canonical.clone(), sub_canonical.clone()];
         let mut caps = CapabilitySet::new();
         caps.add_fs(FsCapability::new_dir(&sub, AccessMode::ReadWrite).expect("grant sub"));
-        let never_grant: Vec<String> = vec![];
-
         let overrides = vec![sub.clone()];
 
-        apply_deny_overrides(&overrides, &mut deny_paths, &mut caps, &never_grant)
-            .expect("should succeed");
+        apply_deny_overrides(&overrides, &mut deny_paths, &mut caps).expect("should succeed");
 
         // sub should be removed, but parent dir must remain
         assert_eq!(deny_paths.len(), 1);
@@ -2041,11 +1884,9 @@ mod tests {
         let mut deny_paths = vec![denied_canonical];
         let mut caps = CapabilitySet::new();
         // No grant added — override should fail
-        let never_grant: Vec<String> = vec![];
-
         let overrides = vec![denied];
 
-        let result = apply_deny_overrides(&overrides, &mut deny_paths, &mut caps, &never_grant);
+        let result = apply_deny_overrides(&overrides, &mut deny_paths, &mut caps);
         assert!(result.is_err());
         let err = result.expect_err("expected error");
         assert!(

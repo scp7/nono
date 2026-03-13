@@ -364,7 +364,7 @@ pub struct SandboxArgs {
     // === Deny overrides ===
     /// Override a deny group rule for a specific path.
     /// The path must also be explicitly granted via --allow, --read, or --write.
-    /// Cannot override never_grant paths (e.g., SSH private keys).
+    /// Does not implicitly grant access; pair with an explicit allow/read/write grant.
     /// Can be specified multiple times.
     #[arg(long, value_name = "PATH")]
     pub override_deny: Vec<PathBuf>,

@@ -377,16 +377,6 @@ Groups without a `platform` field (like `deny_credentials`) apply on all platfor
 
 Platform-specific groups use `_macos` or `_linux` suffixes by convention.
 
-### never_grant
-
-The `never_grant` list in policy.json defines paths that can never be granted access through the supervisor, even with explicit user approval:
-
-- `/etc/shadow`, `/etc/sudoers`, `/etc/passwd`
-- `/boot`, `/boot/grub`
-- macOS launch daemons
-- `~/.ssh/authorized_keys`, SSH private keys, `~/.gnupg`
-
-These are a hard safety net below all other policy.
 
 ### Platform Differences
 

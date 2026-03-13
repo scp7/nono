@@ -1520,13 +1520,7 @@ fn execute_sandboxed(
             };
 
             // --- Supervisor IPC setup (always active in Supervised mode) ---
-            let policy_data = policy::load_embedded_policy()?;
-            let mut never_grant = policy_data.never_grant;
             let protected_roots = protected_paths::ProtectedRoots::from_defaults()?;
-            never_grant.extend(protected_roots.as_strings()?);
-            never_grant.sort();
-            never_grant.dedup();
-            let never_grant_checker = nono::NeverGrantChecker::new(&never_grant)?;
             let approval_backend = terminal_approval::TerminalApproval;
             let supervisor_session_id = audit_state
                 .as_ref()
@@ -1539,7 +1533,7 @@ fn execute_sandboxed(
                     )
                 });
             let supervisor_cfg = exec_strategy::SupervisorConfig {
-                never_grant: &never_grant_checker,
+                protected_roots: protected_roots.as_paths(),
                 approval_backend: &approval_backend,
                 session_id: &supervisor_session_id,
                 open_url_origins: &flags.open_url_origins,

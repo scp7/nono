@@ -515,7 +515,6 @@ Can be specified multiple times.
 <Warning>
 **Security guardrails:**
 
-- Paths in the `never_grant` list (SSH private keys, `/etc/shadow`, etc.) cannot be overridden. Attempting to override a `never_grant` path — or any ancestor that would expose one — is a hard error.
 - A warning is printed to stderr for each override applied, making security relaxations visible in logs.
 - On macOS, Seatbelt allow rules more specific than the deny are emitted. On Linux, the deny path is removed from validation so Landlock allow rules take effect.
 </Warning>

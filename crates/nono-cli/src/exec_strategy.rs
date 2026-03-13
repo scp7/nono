@@ -22,7 +22,7 @@ use nix::unistd::{fork, ForkResult, Pid};
 use nono::supervisor::{ApprovalDecision, SupervisorMessage, SupervisorResponse};
 use nono::{
     ApprovalBackend, CapabilitySet, DenialReason, DenialRecord, DiagnosticFormatter,
-    DiagnosticMode, NeverGrantChecker, NonoError, Result, Sandbox, SupervisorSocket,
+    DiagnosticMode, NonoError, Result, Sandbox, SupervisorSocket,
 };
 use std::collections::HashSet;
 use std::ffi::{CString, OsStr};
@@ -193,8 +193,8 @@ pub struct ExecConfig<'a> {
 /// in the parent that handles capability expansion requests from the
 /// sandboxed child.
 pub struct SupervisorConfig<'a> {
-    /// Checker for permanently blocked paths (from policy.json `never_grant`)
-    pub never_grant: &'a NeverGrantChecker,
+    /// Protected nono state roots that must never be granted dynamically.
+    pub protected_roots: &'a [std::path::PathBuf],
     /// Backend for approval decisions (terminal prompt, webhook, policy engine)
     pub approval_backend: &'a dyn ApprovalBackend,
     /// Session identifier used for audit correlation.
@@ -1438,7 +1438,7 @@ fn run_supervisor_loop(
 /// Handle a single supervisor IPC message.
 ///
 /// Flow:
-/// 1. Check `never_grant` - permanently blocked paths are rejected immediately
+/// 1. Check protected nono state roots - those paths are rejected immediately
 /// 2. Delegate to `ApprovalBackend` for the decision
 /// 3. If granted, open the path and send the fd via `SCM_RIGHTS`
 /// 4. Send the decision response
@@ -1482,17 +1482,20 @@ fn handle_supervisor_message(
             }
             seen_request_ids.insert(request.request_id.clone());
 
-            // 1. Check never_grant list first (before consulting the backend)
-            let never_grant_check = config.never_grant.check(&request.path);
-
             // Digest from trust verification, used for TOCTOU re-check at open time.
             // Set by the trust interceptor branch when an instruction file is verified.
             let mut verified_digest: Option<String> = None;
 
-            let decision = if never_grant_check.is_blocked() {
+            let decision = if let Some(protected_root) =
+                crate::protected_paths::overlapping_protected_root(
+                    &request.path,
+                    false,
+                    config.protected_roots,
+                ) {
                 debug!(
-                    "Supervisor: path {} blocked by never_grant",
-                    request.path.display()
+                    "Supervisor: path {} blocked by protected root {}",
+                    request.path.display(),
+                    protected_root.display()
                 );
                 record_denial(
                     denials,
@@ -1504,7 +1507,8 @@ fn handle_supervisor_message(
                 );
                 ApprovalDecision::Denied {
                     reason: format!(
-                        "Path is permanently blocked by never_grant policy: {}",
+                        "Path overlaps protected nono state root '{}': {}",
+                        protected_root.display(),
                         request.path.display()
                     ),
                 }
@@ -1611,7 +1615,7 @@ fn handle_supervisor_message(
                 match open_path_for_access(
                     &request.path,
                     &request.access,
-                    config.never_grant,
+                    config.protected_roots,
                     verified_digest.as_deref(),
                     Some(ProcfsAccessContext::new(child.as_raw() as u32, None)),
                 ) {
@@ -2092,10 +2096,10 @@ impl std::error::Error for OpenPathError {}
 ///
 /// # Security
 ///
-/// This function canonicalizes the path and re-checks it against the
-/// `never_grant` list AFTER resolution. This prevents symlink-based
-/// bypasses where a child creates `/tmp/innocent -> /etc/shadow` and
-/// requests access to `/tmp/innocent`.
+/// This function canonicalizes the path and re-checks it against protected
+/// nono state roots AFTER resolution. This prevents symlink-based bypasses
+/// where a child creates `/tmp/innocent -> ~/.nono` and requests access to the
+/// innocuous alias.
 ///
 /// File creation is intentionally disabled (`create(false)`) -- the
 /// supervisor only grants access to existing files. File creation should
@@ -2103,7 +2107,7 @@ impl std::error::Error for OpenPathError {}
 fn open_path_for_access(
     path: &Path,
     access: &nono::AccessMode,
-    never_grant: &NeverGrantChecker,
+    protected_roots: &[PathBuf],
     trust_digest: Option<&str>,
     procfs_context: Option<ProcfsAccessContext>,
 ) -> std::result::Result<std::fs::File, OpenPathError> {
@@ -2123,14 +2127,14 @@ fn open_path_for_access(
         )
     })?;
 
-    // Re-check never_grant on the resolved path. A symlink could point
-    // from an innocuous path to a never_grant target.
-    let check = never_grant.check(&canonical);
-    if check.is_blocked() {
+    if let Some(protected_root) =
+        crate::protected_paths::overlapping_protected_root(&canonical, false, protected_roots)
+    {
         return Err(OpenPathError::policy_blocked(format!(
-            "Path {} resolves to {} which is blocked by never_grant policy",
+            "Path {} resolves to {} which overlaps protected nono state root '{}'",
             path.display(),
             canonical.display(),
+            protected_root.display(),
         )));
     }
 
@@ -2451,7 +2455,6 @@ mod tests {
     /// causing the loop to see POLLHUP and return.
     #[test]
     fn test_supervisor_loop_runs_without_pty_relay() {
-        use nono::NeverGrantChecker;
         use std::os::unix::net::UnixStream;
 
         struct DenyAll;
@@ -2473,12 +2476,9 @@ mod tests {
             .map_err(|e| format!("socketpair: {e}"))
             .expect("socketpair failed in test");
 
-        let never_grant = NeverGrantChecker::new(&[])
-            .map_err(|e| format!("never_grant: {e}"))
-            .expect("NeverGrantChecker::new failed in test");
         let backend = DenyAll;
         let sup_cfg = SupervisorConfig {
-            never_grant: &never_grant,
+            protected_roots: &[],
             approval_backend: &backend,
             session_id: "test-session",
             open_url_origins: &[],
@@ -2548,12 +2548,10 @@ mod tests {
 
     #[test]
     fn test_validate_url_allowed_origin() {
-        let never_grant =
-            NeverGrantChecker::new(&[]).expect("NeverGrantChecker::new failed in test");
         let backend = TestDenyBackend;
         let origins = vec!["https://claude.ai".to_string()];
         let config = SupervisorConfig {
-            never_grant: &never_grant,
+            protected_roots: &[],
             approval_backend: &backend,
             session_id: "test",
             open_url_origins: &origins,
@@ -2576,11 +2574,9 @@ mod tests {
 
     #[test]
     fn test_validate_url_blocks_non_https() {
-        let never_grant =
-            NeverGrantChecker::new(&[]).expect("NeverGrantChecker::new failed in test");
         let backend = TestDenyBackend;
         let config = SupervisorConfig {
-            never_grant: &never_grant,
+            protected_roots: &[],
             approval_backend: &backend,
             session_id: "test",
             open_url_origins: &[],
@@ -2601,18 +2597,16 @@ mod tests {
 
     #[test]
     fn test_validate_url_localhost() {
-        let never_grant =
-            NeverGrantChecker::new(&[]).expect("NeverGrantChecker::new failed in test");
         let backend = TestDenyBackend;
         let config_allow = SupervisorConfig {
-            never_grant: &never_grant,
+            protected_roots: &[],
             approval_backend: &backend,
             session_id: "test",
             open_url_origins: &[],
             open_url_allow_localhost: true,
         };
         let config_deny = SupervisorConfig {
-            never_grant: &never_grant,
+            protected_roots: &[],
             approval_backend: &backend,
             session_id: "test",
             open_url_origins: &[],
@@ -2638,11 +2632,9 @@ mod tests {
 
     #[test]
     fn test_validate_url_max_length() {
-        let never_grant =
-            NeverGrantChecker::new(&[]).expect("NeverGrantChecker::new failed in test");
         let backend = TestDenyBackend;
         let config = SupervisorConfig {
-            never_grant: &never_grant,
+            protected_roots: &[],
             approval_backend: &backend,
             session_id: "test",
             open_url_origins: &[],

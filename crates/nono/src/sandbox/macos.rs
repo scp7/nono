@@ -438,7 +438,7 @@ fn generate_profile(caps: &CapabilitySet) -> Result<String> {
     // Extension filter rules for runtime capability expansion via supervisor.
     // These allow sandbox_extension_consume() tokens to dynamically expand access.
     // The rules are inert unless a matching token is consumed -- they add no access
-    // by themselves. The supervisor checks never_grant and deny groups before issuing
+    // by themselves. The supervisor checks protected roots and deny groups before issuing
     // tokens, so the pre-issuance check is the enforcement point.
     if caps.extensions_enabled() {
         profile.push_str("(allow file-read* (extension \"com.apple.app-sandbox.read\"))\n");
