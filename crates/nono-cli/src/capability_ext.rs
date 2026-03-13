@@ -199,20 +199,9 @@ impl CapabilitySetExt for CapabilitySet {
         let mut caps = CapabilitySet::new();
         let protected_roots = ProtectedRoots::from_defaults()?;
 
-        // Resolve policy groups from profile
-        // All profiles must have groups; if empty, use the built-in default profile
+        // Resolve policy groups from the already-finalized profile.
         let loaded_policy = policy::load_embedded_policy()?;
-        let group_exclusions = crate::profile::effective_group_exclusions(profile);
-        policy::validate_group_exclusions(&loaded_policy, &group_exclusions)?;
-        let mut groups = if profile.security.groups.is_empty() {
-            default_profile_groups()?
-        } else {
-            profile.security.groups.clone()
-        };
-        if !group_exclusions.is_empty() {
-            let exclude_set: std::collections::HashSet<&String> = group_exclusions.iter().collect();
-            groups.retain(|g| !exclude_set.contains(g));
-        }
+        let groups = profile.security.groups.clone();
         let mut resolved = policy::resolve_groups(&loaded_policy, &groups, &mut caps)?;
         debug!("Resolved {} policy groups", resolved.names.len());
 
