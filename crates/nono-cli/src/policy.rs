@@ -1817,6 +1817,62 @@ mod tests {
     }
 
     #[test]
+    fn test_system_read_linux_does_not_grant_bare_etc_or_proc() {
+        let policy = load_embedded_policy().expect("embedded policy must parse");
+        let group = policy
+            .groups
+            .get("system_read_linux")
+            .expect("system_read_linux group must exist");
+        let read_paths = group
+            .allow
+            .as_ref()
+            .map(|a| a.read.as_slice())
+            .unwrap_or(&[]);
+
+        assert!(
+            !read_paths.iter().any(|p| p == "/etc"),
+            "system_read_linux must not grant bare '/etc'; use specific paths instead. Found: {:?}",
+            read_paths
+        );
+        assert!(
+            !read_paths.iter().any(|p| p == "/proc"),
+            "system_read_linux must not grant bare '/proc'; use specific paths instead. Found: {:?}",
+            read_paths
+        );
+    }
+
+    #[test]
+    fn test_system_read_linux_does_not_allow_never_grant_paths() {
+        let policy = load_embedded_policy().expect("embedded policy must parse");
+        let group = policy
+            .groups
+            .get("system_read_linux")
+            .expect("system_read_linux group must exist");
+        let read_paths = group
+            .allow
+            .as_ref()
+            .map(|a| a.read.as_slice())
+            .unwrap_or(&[]);
+
+        for never_grant_str in &policy.never_grant {
+            let never_grant_path = expand_path(never_grant_str)
+                .unwrap_or_else(|e| panic!("expand_path({never_grant_str}) failed: {e}"));
+            for allow_str in read_paths {
+                let allow_path = expand_path(allow_str)
+                    .unwrap_or_else(|e| panic!("expand_path({allow_str}) failed: {e}"));
+                assert!(
+                    !never_grant_path.starts_with(&allow_path),
+                    "system_read_linux allow.read entry '{}' (expanded: '{}') overlaps never_grant '{}' (expanded: '{}')",
+                    allow_str,
+                    allow_path.display(),
+                    never_grant_str,
+                    never_grant_path.display(),
+                );
+            }
+        }
+    }
+
+    #[test]
     fn test_apply_deny_overrides_removes_from_deny_paths() {
         let dir = tempfile::tempdir().expect("tmpdir");
         let denied = dir.path().join("denied");
