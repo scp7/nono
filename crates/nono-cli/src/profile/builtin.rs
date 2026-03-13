@@ -34,6 +34,24 @@ mod tests {
     }
 
     #[test]
+    fn test_get_builtin_default() {
+        let profile = get_builtin("default").expect("Profile not found");
+        assert_eq!(profile.meta.name, "default");
+        assert_eq!(profile.workdir.access, WorkdirAccess::None);
+        assert!(!profile.interactive);
+        assert!(!profile.network.block);
+
+        let base = crate::policy::base_groups().expect("load base groups");
+        for group in &base {
+            assert!(
+                profile.security.groups.contains(group),
+                "default should contain base group '{}'",
+                group
+            );
+        }
+    }
+
+    #[test]
     fn test_get_builtin_claude_code_uses_platform_groups_for_os_paths() {
         let profile = get_builtin("claude-code").expect("Profile not found");
         assert!(profile
@@ -144,6 +162,7 @@ mod tests {
     #[test]
     fn test_list_builtin() {
         let profiles = list_builtin();
+        assert!(profiles.contains(&"default".to_string()));
         assert!(profiles.contains(&"claude-code".to_string()));
         assert!(profiles.contains(&"codex".to_string()));
         assert!(profiles.contains(&"openclaw".to_string()));
@@ -197,5 +216,43 @@ mod tests {
                 group
             );
         }
+    }
+
+    #[test]
+    fn test_default_profile_group_set_matches_base_groups() {
+        let profile = get_builtin("default").expect("default profile");
+        let mut expected = crate::policy::base_groups().expect("load base groups");
+        let mut actual = profile.security.groups.clone();
+        expected.sort();
+        actual.sort();
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_default_profile_deny_paths_match_base_groups() {
+        let policy = crate::policy::load_embedded_policy().expect("load policy");
+        let base = crate::policy::base_groups().expect("load base groups");
+        let base_deny =
+            crate::policy::resolve_deny_paths_for_groups(&policy, &base).expect("resolve base deny");
+
+        let default = get_builtin("default").expect("default profile");
+        let default_deny = crate::policy::resolve_deny_paths_for_groups(
+            &policy,
+            &default.security.groups,
+        )
+        .expect("resolve default deny");
+
+        let mut base_rendered: Vec<String> = base_deny
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        let mut default_rendered: Vec<String> = default_deny
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        base_rendered.sort();
+        default_rendered.sort();
+
+        assert_eq!(default_rendered, base_rendered);
     }
 }

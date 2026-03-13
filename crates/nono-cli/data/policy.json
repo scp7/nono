@@ -579,6 +579,23 @@
     }
   },
   "profiles": {
+    "default": {
+      "meta": {
+        "name": "default",
+        "version": "1.0.0",
+        "description": "Default conservative base profile",
+        "author": "nono-project"
+      },
+      "security": {
+        "groups": [],
+        "signal_mode": "isolated"
+      },
+      "trust_groups": [],
+      "filesystem": {},
+      "network": { "block": false },
+      "workdir": { "access": "none" },
+      "interactive": false
+    },
     "claude-code": {
       "meta": {
         "name": "claude-code",
