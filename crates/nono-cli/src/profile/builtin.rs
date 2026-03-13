@@ -162,7 +162,7 @@ mod tests {
     }
 
     #[test]
-    fn test_base_groups_from_policy() {
+    fn test_legacy_base_groups_back_default_profile() {
         let groups = crate::policy::load_embedded_policy()
             .expect("load embedded policy")
             .base_groups;
@@ -174,7 +174,7 @@ mod tests {
     #[test]
     fn test_profile_group_merging() {
         let profile = get_builtin("claude-code").expect("Profile not found");
-        // Should have base groups
+        // Should have default profile groups
         assert!(profile
             .security
             .groups
@@ -199,21 +199,19 @@ mod tests {
         // Verify that built-in profiles resolve exclusions through the shared
         // group-exclusion path. Current embedded profiles do not exclude any.
         let profile = get_builtin("openclaw").expect("Profile not found");
-        let base = crate::policy::load_embedded_policy()
-            .expect("load embedded policy")
-            .base_groups;
-        // All base groups should be present since embedded exclusions are empty.
-        for group in &base {
+        let default = get_builtin("default").expect("default profile");
+        // All default groups should be present since embedded exclusions are empty.
+        for group in &default.security.groups {
             assert!(
                 profile.security.groups.contains(group),
-                "openclaw should contain base group '{}'",
+                "openclaw should contain default profile group '{}'",
                 group
             );
         }
     }
 
     #[test]
-    fn test_default_profile_group_set_matches_base_groups() {
+    fn test_default_profile_group_set_matches_legacy_base_groups() {
         let profile = get_builtin("default").expect("default profile");
         let mut expected = crate::policy::load_embedded_policy()
             .expect("load embedded policy")

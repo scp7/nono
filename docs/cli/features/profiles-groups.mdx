@@ -288,10 +288,11 @@ Groups are named, composable collections of security rules. Profiles reference g
 Every profile's effective capability set is built through composition:
 
 ```
-((base_groups + profile.security.groups) - effective_group_exclusions) + profile.filesystem + CLI flags
+((default_profile_groups + profile.security.groups) - effective_group_exclusions) + profile.filesystem + CLI flags
 ```
 
-1. **base_groups** are always applied (deny rules, system paths, dangerous commands)
+1. **default_profile_groups** come from the built-in `default` profile
+   The legacy `base_groups` field still backs that profile for compatibility, but is deprecated.
 2. **effective_group_exclusions** come from `policy.exclude_groups`
    Legacy `security.trust_groups` is still honored for backward compatibility, but is deprecated.
 3. **profile.security.groups** add additional groups on top
@@ -405,7 +406,7 @@ These are a hard safety net below all other policy.
 nono run --profile claude-code -- claude
 ```
 
-**Groups:** `claude_code_macos`, `claude_code_linux`, `user_caches_macos`, `node_runtime`, `rust_runtime`, `python_runtime`, `vscode_macos`, `vscode_linux`, `unlink_protection` (plus all base_groups)
+**Groups:** `claude_code_macos`, `claude_code_linux`, `user_caches_macos`, `node_runtime`, `rust_runtime`, `python_runtime`, `vscode_macos`, `vscode_linux`, `unlink_protection` (plus the built-in `default` profile groups)
 
 **Filesystem:** `~/.claude` (read+write), `~/.claude.json` (read+write), plus platform-specific Claude Code and VS Code paths from the matching `_macos` or `_linux` groups
 
@@ -421,7 +422,7 @@ nono run --profile codex -- codex
 
 **Filesystem:** `~/.codex` (read+write)
 
-**Groups:** `node_runtime`, `rust_runtime`, `python_runtime`, `nix_runtime`, `unlink_protection` (plus all `base_groups`)
+**Groups:** `node_runtime`, `rust_runtime`, `python_runtime`, `nix_runtime`, `unlink_protection` (plus the built-in `default` profile groups)
 
 **Network:** Allowed
 

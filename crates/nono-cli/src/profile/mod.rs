@@ -844,7 +844,7 @@ pub fn load_profile_from_path(path: &Path) -> Result<Profile> {
     finalize_profile(load_from_file(path)?)
 }
 
-/// Resolve inheritance and apply base-group merging for a raw profile.
+/// Resolve inheritance and apply implicit default-group merging for a raw profile.
 pub(crate) fn finalize_profile(mut profile: Profile) -> Result<Profile> {
     if !profile.security.trust_groups.is_empty() {
         let profile_name = if profile.meta.name.is_empty() {
@@ -857,32 +857,48 @@ pub(crate) fn finalize_profile(mut profile: Profile) -> Result<Profile> {
             profile_name
         );
     }
-    merge_base_groups(&mut profile)?;
+    merge_implicit_default_groups(&mut profile)?;
     Ok(profile)
 }
 
-/// Resolve inheritance and apply base-group merging for a raw profile.
+/// Resolve inheritance and apply implicit default-group merging for a raw profile.
 pub(crate) fn resolve_and_finalize_profile(profile: Profile) -> Result<Profile> {
     finalize_profile(resolve_extends(profile, &mut Vec::new(), 0)?)
 }
 
-/// Merge base_groups from policy.json into a user profile.
+/// Get the implicit default groups for a finalized profile.
+///
+/// `base_groups` remains as deprecated compatibility backing for the built-in
+/// `default` profile only. All other profiles should inherit default behavior
+/// through the resolved `default` profile rather than consuming `base_groups`
+/// directly.
+fn implicit_default_groups(profile: &Profile) -> Result<Vec<String>> {
+    if profile.meta.name == "default" {
+        return Ok(crate::policy::load_embedded_policy()?.base_groups);
+    }
+
+    let default = crate::policy::get_policy_profile("default")?
+        .ok_or_else(|| NonoError::ProfileNotFound("default".to_string()))?;
+    Ok(default.security.groups)
+}
+
+/// Merge the implicit default profile groups into a finalized profile.
 ///
 /// User profiles loaded from file only declare their own groups in
 /// `security.groups`. Built-in profiles also resolve through the same raw
-/// profile pipeline before base_groups are merged.
-/// This function applies: `((base_groups + profile.groups) - effective_exclusions)`.
+/// profile pipeline before implicit default groups are merged.
+/// This function applies:
+/// `((implicit_default_groups + profile.groups) - effective_exclusions)`.
 ///
 /// This means exclusions win even if the same group is also added explicitly in
 /// `security.groups`. That is an intentional shift toward a single, consistent
-/// exclusion model as `trust_groups` is deprecated.
-fn merge_base_groups(profile: &mut Profile) -> Result<()> {
+/// exclusion model as `trust_groups` and `base_groups` are deprecated.
+fn merge_implicit_default_groups(profile: &mut Profile) -> Result<()> {
     let policy = crate::policy::load_embedded_policy()?;
     let exclusions = effective_group_exclusions(profile);
     crate::policy::validate_group_exclusions(&policy, &exclusions)?;
 
-    let base = policy.base_groups;
-    let mut merged: Vec<String> = base;
+    let mut merged = implicit_default_groups(profile)?;
     // Append profile-specific groups (avoiding duplicates)
     let mut seen: std::collections::HashSet<String> = merged.iter().cloned().collect();
     for g in &profile.security.groups {
@@ -977,11 +993,11 @@ fn resolve_extends(child: Profile, visited: &mut Vec<String>, depth: usize) -> R
     Ok(merge_profiles(resolved_base, child))
 }
 
-/// Load a base profile by name WITHOUT applying `merge_base_groups`.
+/// Load a base profile by name WITHOUT applying implicit default-group merging.
 ///
 /// Checks user profiles first, then built-in profiles. Built-in profiles
 /// are loaded as raw profile definitions so inheritance can resolve before
-/// base_groups are merged.
+/// implicit default groups are merged.
 fn load_base_profile_raw(name: &str) -> Result<Profile> {
     if !is_valid_profile_name(name) {
         return Err(NonoError::ProfileInheritance(format!(
@@ -1387,7 +1403,7 @@ mod tests {
             load_profile(profile_path.to_str().expect("valid utf8")).expect("load from path");
         assert_eq!(profile.meta.name, "custom-test");
         assert!(profile.network.block);
-        // base_groups should be merged in
+        // implicit default profile groups should be merged in
         assert!(profile
             .security
             .groups
@@ -1489,7 +1505,7 @@ mod tests {
     }
 
     #[test]
-    fn test_merge_base_groups_into_user_profile() {
+    fn test_merge_implicit_default_groups_into_user_profile() {
         let mut profile = Profile {
             security: SecurityConfig {
                 groups: vec!["node_runtime".to_string()],
@@ -1498,7 +1514,7 @@ mod tests {
             ..Default::default()
         };
 
-        merge_base_groups(&mut profile).expect("merge should succeed");
+        merge_implicit_default_groups(&mut profile).expect("merge should succeed");
 
         // Should contain base groups
         assert!(
@@ -1539,7 +1555,7 @@ mod tests {
     }
 
     #[test]
-    fn test_merge_base_groups_respects_trust_groups() {
+    fn test_merge_implicit_default_groups_respects_trust_groups() {
         let mut profile = Profile {
             security: SecurityConfig {
                 groups: vec!["node_runtime".to_string()],
@@ -1549,7 +1565,7 @@ mod tests {
             ..Default::default()
         };
 
-        merge_base_groups(&mut profile).expect("merge should succeed");
+        merge_implicit_default_groups(&mut profile).expect("merge should succeed");
 
         // Legacy trust_groups exclusions should still be honored.
         assert!(
@@ -1562,7 +1578,7 @@ mod tests {
     }
 
     #[test]
-    fn test_merge_base_groups_respects_policy_exclude_groups() {
+    fn test_merge_implicit_default_groups_respects_policy_exclude_groups() {
         let mut profile = Profile {
             security: SecurityConfig {
                 groups: vec!["node_runtime".to_string()],
@@ -1575,7 +1591,7 @@ mod tests {
             ..Default::default()
         };
 
-        merge_base_groups(&mut profile).expect("merge should succeed");
+        merge_implicit_default_groups(&mut profile).expect("merge should succeed");
 
         assert!(
             !profile
@@ -1587,7 +1603,7 @@ mod tests {
     }
 
     #[test]
-    fn test_merge_base_groups_rejects_required_trust_group() {
+    fn test_merge_implicit_default_groups_rejects_required_trust_group() {
         let mut profile = Profile {
             security: SecurityConfig {
                 groups: vec![],
@@ -1597,7 +1613,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = merge_base_groups(&mut profile);
+        let result = merge_implicit_default_groups(&mut profile);
         assert!(
             result.is_err(),
             "Trusting a required group must be rejected"

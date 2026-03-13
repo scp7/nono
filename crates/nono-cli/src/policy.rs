@@ -23,7 +23,9 @@ pub struct Policy {
     /// Consumed by `NeverGrantChecker` during supervisor orchestration.
     #[serde(default)]
     pub never_grant: Vec<String>,
-    /// Default groups applied to all sandbox invocations
+    /// Deprecated compatibility backing for the built-in `default` profile.
+    /// New code should treat `profiles.default` as the canonical default
+    /// composition and not consume `base_groups` directly.
     #[serde(default)]
     pub base_groups: Vec<String>,
     pub groups: HashMap<String, Group>,
@@ -138,7 +140,7 @@ pub struct ProfileDef {
 }
 
 impl ProfileDef {
-    /// Convert to a raw Profile without merging base_groups.
+    /// Convert to a raw Profile without merging implicit default groups.
     pub fn to_raw_profile(&self) -> profile::Profile {
         let mut policy = self.policy.clone();
         let combined = profile::dedup_append(&self.exclude_groups, &self.trust_groups);
