@@ -1320,6 +1320,8 @@ fn execute_sandboxed(
         None
     };
 
+    let current_dir = execution_start_dir(&flags.workdir, &caps)?;
+
     // Apply sandbox BEFORE fork for Direct mode.
     apply_pre_fork_sandbox(strategy, &caps, flags.silent)?;
 
@@ -1360,8 +1362,6 @@ fn execute_sandboxed(
         "Executing with strategy: {:?}, threading: {:?}",
         strategy, threading
     );
-
-    let current_dir = execution_start_dir(&flags.workdir, &caps)?;
 
     // Create execution config
     let config = exec_strategy::ExecConfig {
