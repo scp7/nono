@@ -1,5 +1,66 @@
 # Changelog
 
+## [0.18.0] - 2026-03-16
+
+### Bug Fixes
+
+- *(hooks)* Use resolved path in capability display (#387) ([#387](https://github.com/always-further/nono/pull/387))
+
+- *(main)* Move cwd resolution before pre-fork sandbox setup (#370) ([#370](https://github.com/always-further/nono/pull/370))
+
+- *(policy)* Honor excluded dangerous command groups for direct exec (#368) ([#368](https://github.com/always-further/nono/pull/368))
+
+- *(config)* Remove hardcoded dangerous commands list (#366) ([#366](https://github.com/always-further/nono/pull/366))
+
+- *(exec)* Prevent implicit cwd access under restrictive profiles (#363) ([#363](https://github.com/always-further/nono/pull/363))
+
+
+### Documentation
+
+- *(profiles)* Simplify group-based profile creation guide (#390) ([#390](https://github.com/always-further/nono/pull/390))
+
+- *(profiles-groups)* Expand built-in profiles and add policy override examples (#376) ([#376](https://github.com/always-further/nono/pull/376))
+
+
+### Features
+
+- Restyle --help output with grouped sections and bold headings (#345) ([#345](https://github.com/always-further/nono/pull/345))
+
+- *(trust)* Skip well-known heavy directories in instruction file walk (#388) ([#388](https://github.com/always-further/nono/pull/388))
+
+- *(cli)* Add `nono profile` scaffolding and authoring tooling (#385) ([#385](https://github.com/always-further/nono/pull/385))
+
+- *(policy)* Extract git config paths into reusable group (#383) ([#383](https://github.com/always-further/nono/pull/383))
+
+- *(cli)* Add `nono policy` introspection subcommand (#382) ([#382](https://github.com/always-further/nono/pull/382))
+
+- *(profile)* Add profile-level override_deny for deny group exceptions (#380) ([#380](https://github.com/always-further/nono/pull/380))
+
+- *(macos)* Gate open shim installation behind launch services flag (#374) ([#374](https://github.com/always-further/nono/pull/374))
+
+- *(capability)* Remove exact file caps when deny patch overrides grant (#367) ([#367](https://github.com/always-further/nono/pull/367))
+
+- *(policy)* Deprecate security.trust_groups in favor of policy.exclude_groups (#357) ([#357](https://github.com/always-further/nono/pull/357))
+
+- *(policy)* Use default profile groups for runtime policy resolution (#356) ([#356](https://github.com/always-further/nono/pull/356))
+
+- *(policy)* Add extends field to embedded profiles (#355) ([#355](https://github.com/always-further/nono/pull/355))
+
+- Add default profile with base group configuration (#352) ([#352](https://github.com/always-further/nono/pull/352))
+
+- *(profile)* Add composable policy patch configuration (#351) ([#351](https://github.com/always-further/nono/pull/351))
+
+
+### Refactoring
+
+- *(setup)* Move banner printing to main.rs (#386) ([#386](https://github.com/always-further/nono/pull/386))
+
+- *(supervisor)* Remove never_grant in favor of protected roots (#360) ([#360](https://github.com/always-further/nono/pull/360))
+
+- *(policy)* Remove deprecated base_groups and trust_groups fields (#359) ([#359](https://github.com/always-further/nono/pull/359))
+
+- *(policy)* Deprecate base_groups in favor of default profile (#358) ([#358](https://github.com/always-further/nono/pull/358))
+
 ## [0.17.1] - 2026-03-13
 
 ### Bug Fixes
