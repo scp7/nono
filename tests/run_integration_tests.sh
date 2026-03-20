@@ -25,10 +25,10 @@ echo ""
 # Build
 # =============================================================================
 
-echo -e "${BLUE}Building nono...${NC}"
+echo -e "${BLUE}Building nono with test trust overrides enabled...${NC}"
 cd "$PROJECT_ROOT"
 
-if ! cargo build --release 2>&1; then
+if ! cargo build --release -p nono-cli --features test-trust-overrides 2>&1; then
     echo -e "${RED}Build failed!${NC}"
     exit 1
 fi
@@ -58,7 +58,13 @@ chmod +x "$SCRIPT_DIR"/lib/*.sh
 
 # Temp directory for suite output files
 RESULTS_DIR=$(mktemp -d)
-trap 'rm -rf "$RESULTS_DIR"' EXIT
+TEST_ENV_DIR=$(mktemp -d)
+trap 'rm -rf "$RESULTS_DIR" "$TEST_ENV_DIR"' EXIT
+
+mkdir -p "$TEST_ENV_DIR/trust-config" "$TEST_ENV_DIR/trust-keystore"
+export NONO_TRUST_TEST_USER_POLICY_PATH="$TEST_ENV_DIR/trust-config/trust-policy.json"
+export NONO_TRUST_TEST_KEYSTORE_DIR="$TEST_ENV_DIR/trust-keystore"
+export NONO_NO_UPDATE_CHECK=1
 
 # All suites to run (script:name pairs)
 SUITES=(
