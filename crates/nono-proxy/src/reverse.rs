@@ -167,7 +167,7 @@ pub async fn handle_reverse_proxy(
     }
 
     // Collect remaining request headers (excluding X-Nono-Token and Host)
-    let filtered_headers = filter_headers(remaining_header);
+    let filtered_headers = filter_headers(remaining_header, &cred.header_name);
     let content_length = extract_content_length(remaining_header);
 
     // Read request body if present, with size limit.
@@ -364,22 +364,21 @@ fn validate_phantom_token(
     Err(ProxyError::InvalidToken)
 }
 
-/// Filter headers, removing Host, Content-Length, and auth headers.
+/// Filter headers, removing Host, Content-Length, and the credential header.
 ///
 /// Content-Length is re-added after body is read, and Host is rewritten
-/// to the upstream. Authorization and x-api-key headers are stripped since
-/// we inject our own credential (the phantom token is validated but not forwarded).
-fn filter_headers(header_bytes: &[u8]) -> Vec<(String, String)> {
+/// to the upstream. The route's configured credential header is stripped
+/// so the phantom token is not forwarded alongside the real credential.
+fn filter_headers(header_bytes: &[u8], cred_header: &str) -> Vec<(String, String)> {
     let header_str = std::str::from_utf8(header_bytes).unwrap_or("");
+    let cred_header_lower = format!("{}:", cred_header.to_lowercase());
     let mut headers = Vec::new();
 
     for line in header_str.lines() {
         let lower = line.to_lowercase();
         if lower.starts_with("host:")
             || lower.starts_with("content-length:")
-            || lower.starts_with("authorization:")
-            || lower.starts_with("x-api-key:")
-            || lower.starts_with("x-goog-api-key:")
+            || lower.starts_with(&cred_header_lower)
             || line.trim().is_empty()
         {
             continue;
@@ -926,7 +925,7 @@ mod tests {
     #[test]
     fn test_filter_headers_removes_host_auth() {
         let header = b"Host: localhost:8080\r\nAuthorization: Bearer old\r\nContent-Type: application/json\r\nAccept: */*\r\n\r\n";
-        let filtered = filter_headers(header);
+        let filtered = filter_headers(header, "Authorization");
         assert_eq!(filtered.len(), 2);
         assert_eq!(filtered[0].0, "Content-Type");
         assert_eq!(filtered[1].0, "Accept");
@@ -935,15 +934,15 @@ mod tests {
     #[test]
     fn test_filter_headers_removes_x_api_key() {
         let header = b"x-api-key: sk-old\r\nContent-Type: application/json\r\n\r\n";
-        let filtered = filter_headers(header);
+        let filtered = filter_headers(header, "x-api-key");
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].0, "Content-Type");
     }
 
     #[test]
-    fn test_filter_headers_removes_x_goog_api_key() {
-        let header = b"x-goog-api-key: gemini-key\r\nContent-Type: application/json\r\n\r\n";
-        let filtered = filter_headers(header);
+    fn test_filter_headers_removes_custom_header() {
+        let header = b"PRIVATE-TOKEN: phantom123\r\nContent-Type: application/json\r\n\r\n";
+        let filtered = filter_headers(header, "PRIVATE-TOKEN");
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].0, "Content-Type");
     }
