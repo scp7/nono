@@ -34,8 +34,6 @@
 
 AI agents get filesystem access, run shell commands, and are wide open to prompt injections. The standard response is guardrails and policies. The problem is that policies can be bypassed — and guardrails can be talked out of.
 
-Security is a structural problem. You can't prompt-engineer your way to safety and software guardrails don't work, yet you don't want to spend time dealing with docker volume mounts, or setting up a hypervisor.
-
 With nono, you don't have to. nono wraps your agent in a kernel-isolated sandbox in seconds — with API key protection, destructive action guardrails, and full snapshot/rollback built in. No hypervisor to configure. No container volume mounts. Zero latency overhead.
 
 ---
@@ -69,30 +67,6 @@ nono run --allow-cwd -- npx @anthropic/agent-framework
 nono run --read /data -- npx @modelcontextprotocol/server-filesystem /data
 nono run --profile pydantic-ai-agent --allow logs/ -- uv run my_agent.py
 nono run --profile custom-profile -- node agent.js
-
-# Rollback snapshots — undo everything the agent did
-nono run --rollback --profile claude-code --allow-cwd -- claude
-
-# Combine rollback, network filtering, and port binding
-nono run --rollback --allow-proxy api.anthropic.ai --allow-port 8000 -- uv run uvicorn myagent.main:app --port 8000
-
-# Network proxy — allowlist hosts, inject credentials without exposing keys
-nono run --allow-proxy api.openai.com --proxy-credential openai -- python3 agent.py
-
-# Audit trail on every session — opt out with --no-audit
-nono run --no-audit --allow-cwd -- npm test
-
-# Direct exec for scripts and piping (no parent process)
-nono wrap --read ./src --write ./output -- cargo build
-
-# Need a profile automatically applied for a specific client?
-nono learn -- new-cool-coding-agent
-
-# Why did you block that command? 
-nono why --path ~/.ssh/id_rsa
-DENIED
-  Reason: sensitive_path
-  Details: Path matches sensitive pattern 'Block access to cryptographic keys, tokens, and cloud credentials'. Access blocked by security policy.
 ```
 
 Built-in profiles for [Claude Code](https://docs.nono.sh/cli/clients/claude-code), [Codex](https://docs.nono.sh/cli/clients/codex), [OpenCode](https://docs.nono.sh/cli/clients/opencode), [OpenClaw](https://docs.nono.sh/cli/clients/openclaw), and [Swival](https://docs.nono.sh/cli/clients/swival) — or define your own with custom permissions.
