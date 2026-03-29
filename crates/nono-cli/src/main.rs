@@ -1573,9 +1573,10 @@ fn execute_sandboxed(
         let needs_proxy = matches!(caps.network_mode(), nono::NetworkMode::ProxyOnly { .. });
         if needs_proxy && nono::is_wsl2() {
             eprintln!(
-                "  [nono] WSL2 detected: proxy network filtering disabled \
+                "  [nono] WSL2 detected: seccomp proxy network enforcement disabled \
                  (seccomp user notification unavailable, see microsoft/WSL#9548). \
-                 Network will use block-all fallback."
+                 Credential proxy still active but port-level lockdown unavailable \
+                 until Landlock V4 (kernel 6.7+)."
             );
             false
         } else if needs_proxy {

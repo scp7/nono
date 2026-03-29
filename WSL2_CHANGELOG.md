@@ -125,11 +125,49 @@ Per-port network filtering (`--allow-net 443`) requires V4. This will become ava
 
 ---
 
-## Track 1.3 — Network strategy on WSL2 🔲
+## Track 1.3 — Network strategy on WSL2 ✅
 
-**Goal**: Block-all works (confirmed). Per-port denied (confirmed). Out-of-process proxy for credential injection needs implementation.
+**Goal**: Ensure all network modes work or degrade gracefully on WSL2.
 
-**Status**: Block-all and per-port rejection validated by tests. Proxy approach not started.
+### What was done
+
+After investigating the proxy architecture, we found the original plan's "out-of-process proxy" approach was unnecessary. The credential proxy **already works on WSL2** because it runs in the unsandboxed parent process:
+
+1. Parent starts proxy on `127.0.0.1:{random_port}` (before fork)
+2. Loads credentials from system keystore
+3. Sets env vars (`HTTP_PROXY`, `OPENAI_API_KEY`, etc.)
+4. Forks child, applies Landlock, execs command
+5. Child routes API calls through proxy automatically via env vars
+6. Proxy injects credentials and forwards to upstream
+
+**What's degraded**: Network port-level enforcement. On native Linux with Landlock V4+, the child is restricted to *only* connect to `127.0.0.1:{proxy_port}`. On WSL2 with V3, there's no port filtering — the child *could* bypass the proxy and connect directly. The seccomp fallback that would catch this is also unavailable (EBUSY).
+
+**Why we didn't implement Unix socket proxy or other workarounds:**
+- Unix socket proxy: HTTP clients need TCP to speak HTTP proxy protocol (`CONNECT` tunnels). Blocking all TCP via seccomp then using a Unix socket creates a chicken-and-egg problem — standard SDKs (Python `requests`, Node `fetch`, Go `net/http`) don't support Unix socket proxies.
+- Network namespaces: Requires root (CAP_NET_ADMIN).
+- eBPF cgroup socket filter: Requires root for cgroup setup.
+- iptables owner match: Requires root.
+
+**Why this is acceptable**: The credential proxy is still valuable even without port enforcement — it keeps secrets out of the child's env vars, provides audit logging, and enables L7 endpoint filtering. The gap is only that a malicious child could bypass the proxy to make direct connections, but the proxy itself works correctly.
+
+**Future fix**: When Microsoft upgrades the WSL2 kernel to 6.7+ (Landlock V4), port-level lockdown activates automatically. `detect_abi()` already probes for V4, and `NetworkMode::ProxyOnly` already applies `NetPort` rules when V4 is available. **Zero code changes needed.**
+
+Updated the seccomp proxy fallback warning in `main.rs` to accurately describe the situation:
+```
+[nono] WSL2 detected: seccomp proxy network enforcement disabled
+       (seccomp user notification unavailable, see microsoft/WSL#9548).
+       Credential proxy still active but port-level lockdown unavailable
+       until Landlock V4 (kernel 6.7+).
+```
+
+### Network mode summary on WSL2
+
+| Mode | Works | Enforcement |
+|------|-------|-------------|
+| `--block-net` | ✅ | Kernel-enforced (seccomp `RET_ERRNO`) |
+| `--allow-net 443` | ❌ Rejected | Needs Landlock V4 (kernel 6.7+) |
+| `--credential openai` | ✅ Functional | Proxy works, but child not port-locked to proxy |
+| Default (allow all) | ✅ | No restriction |
 
 ---
 
