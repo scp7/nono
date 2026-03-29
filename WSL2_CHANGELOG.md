@@ -171,11 +171,32 @@ Updated the seccomp proxy fallback warning in `main.rs` to accurately describe t
 
 ---
 
-## Track 1.4 — CLI UX 🔲
+## Track 1.4 — CLI UX ✅
 
 **Goal**: Clear warnings and error messages for WSL2 limitations.
 
-**Status**: Not started. `setup --check-only` already reports WSL2 kernel and Landlock info but doesn't explicitly call out WSL2 feature limitations.
+### What was done
+
+**`setup --check-only` WSL2 feature matrix** (`setup.rs`):
+
+When WSL2 is detected, `nono setup --check-only` now prints a full feature availability matrix:
+
+```
+  * WSL2 environment detected
+    - Filesystem sandbox: available (Landlock V3)
+    - Block-all network (--block-net): available
+    - Per-port network filtering: unavailable (needs kernel 6.7+ for Landlock V4)
+    - Credential proxy (--credential): functional (port enforcement degraded)
+    - Supervisor mode: available (basic)
+    - Capability elevation (--capability-elevation): unavailable
+      seccomp user notification returns EBUSY (microsoft/WSL#9548)
+```
+
+**Runtime warnings** (implemented in Track 1.2):
+- `--capability-elevation` on WSL2: `[nono] WSL2 detected: capability elevation disabled ...`
+- Proxy with seccomp fallback on WSL2: `[nono] WSL2 detected: seccomp proxy network enforcement disabled ...`
+
+**Per-port filtering rejection**: Already handled by Landlock — attempting V4 network rules on a V3 kernel returns an error naturally. No WSL2-specific code needed.
 
 ---
 
