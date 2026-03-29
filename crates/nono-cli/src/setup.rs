@@ -206,10 +206,9 @@ impl SetupRunner {
             } else {
                 println!("    - Per-port network filtering: unavailable (needs kernel 6.7+ for Landlock V4)");
             }
-            println!("    - Credential proxy (--credential): functional (port enforcement degraded)");
-            println!("    - Supervisor mode: available (basic)");
+            println!("    - Credential proxy (--credential): requires wsl2_proxy_policy profile opt-in");
             println!("    - Capability elevation (--capability-elevation): unavailable");
-            println!("      seccomp user notification returns EBUSY (microsoft/WSL#9548)");
+            println!("    Note: seccomp user notification returns EBUSY (microsoft/WSL#9548)");
         }
 
         if detected.has_network() {

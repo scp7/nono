@@ -232,15 +232,22 @@ pub fn print_abi_info(silent: bool) {
                 .map(|(name, _)| *name)
                 .collect();
             if !missing.is_empty() {
+                let hint = if nono::sandbox::is_wsl2() {
+                    format!(
+                        "degraded: per-port filtering, capability elevation unavailable on WSL2\n\
+                         {0}(block-all network via --block-net still works)\n\
+                         {0}details: https://nono.sh/docs/cli/internals/wsl2",
+                        " ".repeat(10),
+                    )
+                } else {
+                    format!(
+                        "degraded: {} (upgrade kernel for full support)",
+                        missing.join(", "),
+                    )
+                };
                 eprintln!(
                     "          {}",
-                    fg(
-                        &format!(
-                            "degraded: {} (upgrade kernel for full support)",
-                            missing.join(", "),
-                        ),
-                        t.yellow,
-                    ),
+                    fg(&hint, t.yellow),
                 );
             }
         }

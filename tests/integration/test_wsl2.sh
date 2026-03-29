@@ -188,6 +188,87 @@ else
 fi
 
 # =============================================================================
+# WSL2 Proxy Policy (fail-secure default)
+# =============================================================================
+
+echo ""
+echo "--- WSL2 Proxy Policy ---"
+
+if is_wsl2; then
+    if ! require_working_sandbox "WSL2 proxy policy tests"; then
+        echo "  Sandbox unavailable, skipping proxy policy tests"
+    else
+        TMPDIR_PROXY=$(setup_test_dir)
+
+        # Default policy (error): --credential should fail on WSL2
+        TESTS_RUN=$((TESTS_RUN + 1))
+        set +e
+        proxy_output=$("$NONO_BIN" run --credential github --allow "$TMPDIR_PROXY" -- echo "should fail" </dev/null 2>&1)
+        proxy_exit=$?
+        set -e
+
+        if echo "$proxy_output" | grep -q "proxy-only network mode cannot be kernel-enforced"; then
+            echo -e "  ${GREEN}PASS${NC}: default policy rejects ProxyOnly on WSL2 (fail-secure)"
+            TESTS_PASSED=$((TESTS_PASSED + 1))
+        else
+            echo -e "  ${RED}FAIL${NC}: default policy should reject ProxyOnly on WSL2"
+            echo "       Output: ${proxy_output:0:500}"
+            TESTS_FAILED=$((TESTS_FAILED + 1))
+        fi
+
+        # Error message should mention the escape hatch
+        TESTS_RUN=$((TESTS_RUN + 1))
+        if echo "$proxy_output" | grep -q "wsl2_proxy_policy"; then
+            echo -e "  ${GREEN}PASS${NC}: error message mentions wsl2_proxy_policy escape hatch"
+            TESTS_PASSED=$((TESTS_PASSED + 1))
+        else
+            echo -e "  ${RED}FAIL${NC}: error message should mention wsl2_proxy_policy"
+            echo "       Output: ${proxy_output:0:500}"
+            TESTS_FAILED=$((TESTS_FAILED + 1))
+        fi
+
+        # insecure_proxy policy: create a profile that opts in
+        INSECURE_PROFILE="$TMPDIR_PROXY/insecure-proxy-test.json"
+        cat > "$INSECURE_PROFILE" <<'PROFILE_EOF'
+{
+  "meta": { "name": "insecure-proxy-test", "version": "1.0.0" },
+  "filesystem": { "allow": ["/tmp"] },
+  "network": { "block": false },
+  "security": { "wsl2_proxy_policy": "insecure_proxy" }
+}
+PROFILE_EOF
+
+        TESTS_RUN=$((TESTS_RUN + 1))
+        set +e
+        insecure_output=$("$NONO_BIN" run --profile "$INSECURE_PROFILE" --credential github --allow "$TMPDIR_PROXY" -- echo "insecure ok" </dev/null 2>&1)
+        insecure_exit=$?
+        set -e
+
+        if echo "$insecure_output" | grep -q "insecure proxy mode"; then
+            echo -e "  ${GREEN}PASS${NC}: insecure_proxy policy emits degraded-security warning"
+            TESTS_PASSED=$((TESTS_PASSED + 1))
+        else
+            # Credential loading may fail (no keystore), but the proxy policy
+            # should have been accepted before that point
+            if echo "$insecure_output" | grep -q "proxy-only network mode cannot be kernel-enforced"; then
+                echo -e "  ${RED}FAIL${NC}: insecure_proxy policy was not respected"
+                echo "       Output: ${insecure_output:0:500}"
+                TESTS_FAILED=$((TESTS_FAILED + 1))
+            else
+                echo -e "  ${GREEN}PASS${NC}: insecure_proxy policy accepted (credential loading may have failed separately)"
+                TESTS_PASSED=$((TESTS_PASSED + 1))
+            fi
+        fi
+
+        cleanup_test_dir "$TMPDIR_PROXY"
+    fi
+else
+    skip_test "default policy rejects ProxyOnly on WSL2" "not running on WSL2"
+    skip_test "error message mentions escape hatch" "not running on WSL2"
+    skip_test "insecure_proxy policy emits warning" "not running on WSL2"
+fi
+
+# =============================================================================
 # Setup --check-only Feature Matrix
 # =============================================================================
 

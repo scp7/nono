@@ -25,7 +25,7 @@ WSL2 runs a real Linux kernel with Landlock LSM enabled. Core filesystem sandbox
 | Dangerous command blocking | Available | All 46 commands blocked |
 | Block-all network (`--block-net`) | Available | seccomp `RET_ERRNO`, kernel-enforced |
 | Per-port network filtering | Unavailable | Needs Landlock V4 (kernel 6.7+) |
-| Credential proxy (`--credential`) | Functional | Proxy works, port-level lockdown degraded |
+| Credential proxy (`--credential`) | Blocked (default) | Fails secure; requires `wsl2_proxy_policy: "insecure_proxy"` in profile |
 | Supervised mode (`nono run`) | Available | Basic fork+sandbox+exec works |
 | Direct mode (`nono wrap`) | Available | No fork, no supervisor |
 | Capability elevation (`--capability-elevation`) | Unavailable | seccomp notify returns `EBUSY` |
@@ -86,27 +86,50 @@ This is tracked in [microsoft/WSL#9548](https://github.com/microsoft/WSL/issues/
 When WSL2 is detected:
 
 1. `--capability-elevation` is automatically disabled with a warning
-2. Proxy network enforcement (seccomp-based) is skipped with a warning
+2. Proxy-only network mode (`--credential`, `--network-profile`) is **rejected by default** to prevent unenforced execution
 3. All other features continue to work normally
-
-The warnings look like:
-
-```
-[nono] WSL2 detected: capability elevation disabled (seccomp user notification unavailable, see microsoft/WSL#9548)
-```
 
 ## Credential Proxy on WSL2
 
-The credential proxy (`--credential`) works on WSL2. The proxy runs in the unsandboxed parent process and:
+On native Linux (including pre-Landlock-V4 kernels), the credential proxy's network lockdown is enforced via seccomp user notification — the supervisor validates every `connect`/`bind` call. On WSL2, this enforcement is unavailable.
 
-1. Binds to `127.0.0.1` on a random port
-2. Loads credentials from the system keystore
-3. Sets environment variables (`HTTP_PROXY`, `OPENAI_API_KEY`, etc.)
-4. The sandboxed child routes API calls through the proxy automatically
+**By default, nono refuses to run in proxy-only mode on WSL2** rather than silently losing network enforcement. You will see:
 
-**What's degraded**: On native Linux with Landlock V4+, the child is restricted to *only* connect to the proxy port. On WSL2 with V3, there is no port-level network filtering, so the child could theoretically bypass the proxy. The proxy itself works correctly — only the enforcement boundary is relaxed.
+```
+nono: Sandbox initialization failed: WSL2: proxy-only network mode cannot be kernel-enforced.
+...
+To allow degraded execution, set wsl2_proxy_policy: "insecure_proxy" in your profile's security config.
+```
 
-When Landlock V4 becomes available on WSL2, port-level lockdown will activate automatically.
+### Opting in to insecure proxy mode
+
+If credential injection is more important than network lockdown for your use case (e.g., development workflows where the agent is trusted), you can explicitly opt in by adding `wsl2_proxy_policy` to your profile:
+
+```json
+{
+  "security": {
+    "wsl2_proxy_policy": "insecure_proxy"
+  }
+}
+```
+
+**Policy values:**
+
+| Value | Behavior |
+|-------|----------|
+| `error` (default) | Refuse to run if proxy-only mode cannot be kernel-enforced |
+| `insecure_proxy` | Allow degraded execution with a strong warning. The credential proxy runs and injects credentials, but the child is **not** prevented from bypassing the proxy and opening arbitrary outbound connections. |
+
+When `insecure_proxy` is active, nono prints:
+
+```
+[nono] WARNING: WSL2 insecure proxy mode — credential proxy active but network is NOT
+kernel-enforced. The sandboxed process can bypass the proxy and open arbitrary outbound connections.
+```
+
+**This is an explicit opt-in to reduced enforcement.** Do not set `insecure_proxy` in profiles distributed to untrusted users.
+
+When Landlock V4 becomes available on WSL2 (kernel 6.7+), port-level lockdown will activate automatically and both policy values will behave identically.
 
 ## Workarounds
 

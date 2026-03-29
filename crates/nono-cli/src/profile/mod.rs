@@ -742,6 +742,34 @@ impl From<ProfileIpcMode> for nono::IpcMode {
     }
 }
 
+/// WSL2 proxy fallback policy.
+///
+/// Controls what happens when `NetworkMode::ProxyOnly` is requested on WSL2
+/// where the seccomp-notify fallback cannot be used (EBUSY). On native Linux
+/// (including pre-V4 kernels), the seccomp fallback enforces proxy-only
+/// networking. On WSL2, that enforcement is unavailable.
+///
+/// Default: `Error` — refuse to run rather than silently losing enforcement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Wsl2ProxyPolicy {
+    /// Refuse to run if ProxyOnly cannot be kernel-enforced on WSL2.
+    /// This is the secure default.
+    Error,
+    /// Allow degraded execution: credential proxy runs and env vars are
+    /// injected, but the child is NOT prevented from bypassing the proxy
+    /// and opening arbitrary outbound connections directly.
+    /// Use only when credential injection is more important than network
+    /// lockdown (e.g., development workflows where the agent is trusted).
+    InsecureProxy,
+}
+
+impl Default for Wsl2ProxyPolicy {
+    fn default() -> Self {
+        Self::Error
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum WorkdirAccess {
@@ -794,6 +822,13 @@ pub struct SecurityConfig {
     /// the sandbox is static — no seccomp interception, no PTY mux, no prompts.
     #[serde(default)]
     pub capability_elevation: Option<bool>,
+    /// WSL2 proxy fallback policy. Controls behavior when ProxyOnly network
+    /// mode cannot be kernel-enforced on WSL2 (seccomp notify returns EBUSY).
+    /// Default: `error` — refuse to run. Set to `insecure_proxy` to allow
+    /// degraded execution where the credential proxy runs but the child is
+    /// not prevented from bypassing it.
+    #[serde(default)]
+    pub wsl2_proxy_policy: Option<Wsl2ProxyPolicy>,
 }
 
 /// Rollback snapshot configuration in a profile
@@ -1218,6 +1253,10 @@ fn merge_profiles(base: Profile, child: Profile) -> Profile {
                 .security
                 .capability_elevation
                 .or(base.security.capability_elevation),
+            wsl2_proxy_policy: child
+                .security
+                .wsl2_proxy_policy
+                .or(base.security.wsl2_proxy_policy),
         },
         filesystem: FilesystemConfig {
             allow: dedup_append(&base.filesystem.allow, &child.filesystem.allow),

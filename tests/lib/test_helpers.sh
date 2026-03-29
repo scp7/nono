@@ -201,9 +201,10 @@ skip_unless_linux() {
     return 0
 }
 
-# Check if running inside WSL2
+# Check if running inside WSL2 (kernel-controlled indicators only)
 is_wsl2() {
-    [[ -f /proc/sys/fs/binfmt_misc/WSLInterop ]] || [[ -n "${WSL_DISTRO_NAME:-}" ]]
+    [[ -f /proc/sys/fs/binfmt_misc/WSLInterop ]] || \
+        grep -qi 'microsoft\|WSL' /proc/version 2>/dev/null
 }
 
 # Skip test unless on WSL2

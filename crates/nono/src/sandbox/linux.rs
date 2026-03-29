@@ -172,9 +172,13 @@ static WSL2_DETECTED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 
 /// Detect whether the current process is running inside WSL2.
 ///
-/// Checks two indicators (either is sufficient):
+/// Uses only kernel-controlled indicators to prevent spoofing:
 /// 1. The file `/proc/sys/fs/binfmt_misc/WSLInterop` exists
-/// 2. The `WSL_DISTRO_NAME` environment variable is set
+/// 2. `/proc/version` contains "microsoft" or "WSL"
+///
+/// The `WSL_DISTRO_NAME` environment variable is intentionally NOT
+/// trusted because it is caller-controlled and could be set by a
+/// malicious wrapper to disable security features on native Linux.
 ///
 /// The result is cached for the lifetime of the process.
 #[must_use]
@@ -183,17 +187,34 @@ pub fn is_wsl2() -> bool {
 }
 
 /// Perform the actual WSL2 detection (called once, cached).
+///
+/// Only trusts kernel-controlled indicators. Environment variables alone
+/// are not sufficient because they are caller-controlled and could be
+/// spoofed to disable security features on native Linux.
 fn detect_wsl2() -> bool {
-    // Indicator 1: WSLInterop binfmt entry (present in all WSL2 distros)
+    // Primary: WSLInterop binfmt entry (kernel-controlled, present in all WSL2 distros)
     if std::path::Path::new("/proc/sys/fs/binfmt_misc/WSLInterop").exists() {
         info!("WSL2 detected via /proc/sys/fs/binfmt_misc/WSLInterop");
         return true;
     }
 
-    // Indicator 2: WSL_DISTRO_NAME env var (set by WSL init)
+    // Secondary: kernel version string contains "microsoft" or "WSL2"
+    // This is written by the kernel build and cannot be spoofed from userspace.
+    if let Ok(version) = std::fs::read_to_string("/proc/version") {
+        if version.contains("microsoft") || version.contains("WSL") {
+            info!("WSL2 detected via /proc/version kernel string");
+            return true;
+        }
+    }
+
+    // WSL_DISTRO_NAME env var is NOT trusted on its own — it is caller-controlled
+    // and could be set by a malicious wrapper to disable security features.
+    // Only log it for diagnostics if other indicators were negative.
     if std::env::var_os("WSL_DISTRO_NAME").is_some() {
-        info!("WSL2 detected via WSL_DISTRO_NAME environment variable");
-        return true;
+        warn!(
+            "WSL_DISTRO_NAME is set but no kernel-controlled WSL2 indicators found; \
+             ignoring env var to prevent security downgrade"
+        );
     }
 
     false
@@ -213,12 +234,10 @@ pub struct Wsl2FeatureMatrix {
     pub block_all_network: bool,
     /// Per-port TCP filtering (Landlock V4) — requires kernel 6.7+
     pub per_port_network: bool,
-    /// Supervisor mode (seccomp notify) — broken on WSL2 (EBUSY)
-    pub supervisor_mode: bool,
-    /// Proxy network filtering (seccomp notify) — broken on WSL2
-    pub proxy_network_filter: bool,
-    /// Runtime capability expansion — requires supervisor
-    pub capability_expansion: bool,
+    /// seccomp user notification — broken on WSL2 (EBUSY).
+    /// Affects: capability elevation, proxy network enforcement.
+    /// Does NOT affect: basic supervised mode (fork+sandbox+exec).
+    pub seccomp_notify: bool,
 }
 
 impl Wsl2FeatureMatrix {
@@ -234,9 +253,7 @@ impl Wsl2FeatureMatrix {
             filesystem_sandbox: abi.is_some(),
             block_all_network: true, // seccomp RET_ERRNO works everywhere
             per_port_network: has_network,
-            supervisor_mode: !wsl2,
-            proxy_network_filter: !wsl2,
-            capability_expansion: !wsl2,
+            seccomp_notify: !wsl2,
         }
     }
 
@@ -264,22 +281,18 @@ impl Wsl2FeatureMatrix {
             status(self.per_port_network)
         ));
         lines.push(format!(
-            "  Supervisor mode: {}",
-            status(self.supervisor_mode)
+            "  seccomp user notification: {}",
+            status(self.seccomp_notify)
         ));
-        lines.push(format!(
-            "  Proxy network filter: {}",
-            status(self.proxy_network_filter)
-        ));
-        lines.push(format!(
-            "  Capability expansion: {}",
-            status(self.capability_expansion)
-        ));
-
-        if !self.supervisor_mode {
+        if !self.seccomp_notify {
             lines.push(
-                "  Note: seccomp user notification returns EBUSY on WSL2 (microsoft/WSL#9548)"
-                    .to_string(),
+                "    Affects: capability elevation, proxy network enforcement".to_string(),
+            );
+            lines.push(
+                "    Unaffected: basic supervised mode, block-all network".to_string(),
+            );
+            lines.push(
+                "    See: microsoft/WSL#9548".to_string(),
             );
         }
         if !self.per_port_network {
@@ -3203,15 +3216,18 @@ mod tests {
 
     #[test]
     fn test_detect_wsl2_matches_indicators() {
-        // Verify detection agrees with the raw indicators
+        // Verify detection agrees with kernel-controlled indicators.
+        // WSL_DISTRO_NAME env var alone is NOT sufficient (spoofable).
         let has_interop =
             std::path::Path::new("/proc/sys/fs/binfmt_misc/WSLInterop").exists();
-        let has_env = std::env::var_os("WSL_DISTRO_NAME").is_some();
+        let has_kernel_string = std::fs::read_to_string("/proc/version")
+            .map(|v| v.contains("microsoft") || v.contains("WSL"))
+            .unwrap_or(false);
 
-        if has_interop || has_env {
+        if has_interop || has_kernel_string {
             assert!(
                 is_wsl2(),
-                "WSL2 indicators present but is_wsl2() returned false"
+                "Kernel-controlled WSL2 indicators present but is_wsl2() returned false"
             );
         }
         // Note: we don't assert the negative because the OnceLock cache
@@ -3232,32 +3248,16 @@ mod tests {
         );
 
         if matrix.is_wsl2 {
-            // On WSL2, seccomp-notify-dependent features must be unavailable
+            // On WSL2, seccomp user notification is unavailable (EBUSY)
             assert!(
-                !matrix.supervisor_mode,
-                "supervisor_mode must be unavailable on WSL2"
-            );
-            assert!(
-                !matrix.proxy_network_filter,
-                "proxy_network_filter must be unavailable on WSL2"
-            );
-            assert!(
-                !matrix.capability_expansion,
-                "capability_expansion must be unavailable on WSL2"
+                !matrix.seccomp_notify,
+                "seccomp_notify must be unavailable on WSL2"
             );
         } else {
-            // On native Linux, seccomp-notify features should be available
+            // On native Linux, seccomp user notification should be available
             assert!(
-                matrix.supervisor_mode,
-                "supervisor_mode must be available on native Linux"
-            );
-            assert!(
-                matrix.proxy_network_filter,
-                "proxy_network_filter must be available on native Linux"
-            );
-            assert!(
-                matrix.capability_expansion,
-                "capability_expansion must be available on native Linux"
+                matrix.seccomp_notify,
+                "seccomp_notify must be available on native Linux"
             );
         }
     }

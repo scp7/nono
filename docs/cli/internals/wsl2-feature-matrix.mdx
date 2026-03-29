@@ -57,7 +57,7 @@ Legend: **Full** = identical to native Linux | **Degraded** = works with limitat
 
 | Feature | Status | Notes |
 |---------|--------|-------|
-| `--credential SERVICE` (reverse proxy injection) | Degraded | Proxy works; child not port-locked to proxy |
+| `--credential SERVICE` (reverse proxy injection) | Blocked (default) | Fails secure unless profile sets `wsl2_proxy_policy: "insecure_proxy"` |
 | `--env-credential` (env var injection) | Full | No proxy needed |
 | `--env-credential-map` | Full | No proxy needed |
 | `--network-profile` (host allowlist via proxy) | Degraded | Proxy works; no port lockdown |
@@ -70,7 +70,7 @@ Legend: **Full** = identical to native Linux | **Degraded** = works with limitat
 | Credential zeroization in memory | Full | Rust `Zeroizing<String>` |
 | SSRF protection (cloud metadata blocking) | Full | Applied at proxy level |
 
-**Why degraded:** On native Linux with Landlock V4, the child can *only* connect to `127.0.0.1:{proxy_port}`. On WSL2 with V3, there's no port-level filtering — the child could bypass the proxy and connect directly. The proxy itself works correctly. When Landlock V4 arrives, enforcement activates automatically.
+**Why blocked by default:** On native Linux (even pre-V4), proxy-only mode is kernel-enforced via seccomp user notification. On WSL2, seccomp notify returns EBUSY, so the child could bypass the proxy. nono refuses to run in this mode by default. Profiles can opt in to degraded execution with `wsl2_proxy_policy: "insecure_proxy"` in the security config. When Landlock V4 arrives (kernel 6.7+), enforcement activates automatically and the policy setting becomes irrelevant.
 
 ## Execution & Supervision
 
