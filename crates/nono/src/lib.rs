@@ -73,7 +73,7 @@ pub use keystore::{
 };
 pub use net_filter::{FilterResult, HostFilter};
 #[cfg(target_os = "linux")]
-pub use sandbox::{detect_abi, DetectedAbi};
+pub use sandbox::{detect_abi, is_wsl2, DetectedAbi, Wsl2FeatureMatrix};
 pub use sandbox::{Sandbox, SupportInfo};
 pub use state::SandboxState;
 pub use supervisor::{

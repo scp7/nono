@@ -165,6 +165,133 @@ fn probe_abi_candidate(abi: ABI) -> std::result::Result<(), String> {
     Ok(())
 }
 
+/// Cached WSL2 detection result.
+///
+/// Uses `OnceLock` so the filesystem/env checks happen at most once per process.
+static WSL2_DETECTED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+/// Detect whether the current process is running inside WSL2.
+///
+/// Checks two indicators (either is sufficient):
+/// 1. The file `/proc/sys/fs/binfmt_misc/WSLInterop` exists
+/// 2. The `WSL_DISTRO_NAME` environment variable is set
+///
+/// The result is cached for the lifetime of the process.
+#[must_use]
+pub fn is_wsl2() -> bool {
+    *WSL2_DETECTED.get_or_init(detect_wsl2)
+}
+
+/// Perform the actual WSL2 detection (called once, cached).
+fn detect_wsl2() -> bool {
+    // Indicator 1: WSLInterop binfmt entry (present in all WSL2 distros)
+    if std::path::Path::new("/proc/sys/fs/binfmt_misc/WSLInterop").exists() {
+        info!("WSL2 detected via /proc/sys/fs/binfmt_misc/WSLInterop");
+        return true;
+    }
+
+    // Indicator 2: WSL_DISTRO_NAME env var (set by WSL init)
+    if std::env::var_os("WSL_DISTRO_NAME").is_some() {
+        info!("WSL2 detected via WSL_DISTRO_NAME environment variable");
+        return true;
+    }
+
+    false
+}
+
+/// Information about WSL2 feature availability.
+///
+/// Lists which nono features work, which are degraded, and which are
+/// unavailable in a WSL2 environment.
+#[derive(Debug, Clone)]
+pub struct Wsl2FeatureMatrix {
+    /// Whether the environment is WSL2
+    pub is_wsl2: bool,
+    /// Filesystem sandboxing (Landlock V1-V3) — always works on WSL2
+    pub filesystem_sandbox: bool,
+    /// Block-all network mode (seccomp RET_ERRNO) — works on WSL2
+    pub block_all_network: bool,
+    /// Per-port TCP filtering (Landlock V4) — requires kernel 6.7+
+    pub per_port_network: bool,
+    /// Supervisor mode (seccomp notify) — broken on WSL2 (EBUSY)
+    pub supervisor_mode: bool,
+    /// Proxy network filtering (seccomp notify) — broken on WSL2
+    pub proxy_network_filter: bool,
+    /// Runtime capability expansion — requires supervisor
+    pub capability_expansion: bool,
+}
+
+impl Wsl2FeatureMatrix {
+    /// Build the feature matrix for the current environment.
+    #[must_use]
+    pub fn detect() -> Self {
+        let wsl2 = is_wsl2();
+        let abi = detect_abi().ok();
+        let has_network = abi.as_ref().is_some_and(|a| a.has_network());
+
+        Self {
+            is_wsl2: wsl2,
+            filesystem_sandbox: abi.is_some(),
+            block_all_network: true, // seccomp RET_ERRNO works everywhere
+            per_port_network: has_network,
+            supervisor_mode: !wsl2,
+            proxy_network_filter: !wsl2,
+            capability_expansion: !wsl2,
+        }
+    }
+
+    /// Return a human-readable summary of feature availability.
+    #[must_use]
+    pub fn summary(&self) -> String {
+        if !self.is_wsl2 {
+            return "Native Linux environment (all features available)".to_string();
+        }
+
+        let mut lines = vec!["WSL2 environment detected:".to_string()];
+
+        let status = |available: bool| if available { "available" } else { "unavailable" };
+
+        lines.push(format!(
+            "  Filesystem sandbox: {}",
+            status(self.filesystem_sandbox)
+        ));
+        lines.push(format!(
+            "  Block-all network: {}",
+            status(self.block_all_network)
+        ));
+        lines.push(format!(
+            "  Per-port network filtering: {}",
+            status(self.per_port_network)
+        ));
+        lines.push(format!(
+            "  Supervisor mode: {}",
+            status(self.supervisor_mode)
+        ));
+        lines.push(format!(
+            "  Proxy network filter: {}",
+            status(self.proxy_network_filter)
+        ));
+        lines.push(format!(
+            "  Capability expansion: {}",
+            status(self.capability_expansion)
+        ));
+
+        if !self.supervisor_mode {
+            lines.push(
+                "  Note: seccomp user notification returns EBUSY on WSL2 (microsoft/WSL#9548)"
+                    .to_string(),
+            );
+        }
+        if !self.per_port_network {
+            lines.push(
+                "  Note: per-port filtering requires Landlock V4 (kernel 6.7+)".to_string(),
+            );
+        }
+
+        lines.join("\n")
+    }
+}
+
 /// Check if Landlock is supported on this system
 pub fn is_supported() -> bool {
     detect_abi().is_ok()
@@ -3053,6 +3180,131 @@ mod tests {
             libc::EACCES as u8,
             "bind() should fail with EACCES when has_bind_ports=false, got errno={}",
             buf[0]
+        );
+    }
+
+    // =========================================================================
+    // WSL2 detection tests
+    // =========================================================================
+
+    #[test]
+    fn test_is_wsl2_does_not_panic() {
+        // Must not panic regardless of environment
+        let _ = is_wsl2();
+    }
+
+    #[test]
+    fn test_is_wsl2_consistent() {
+        // Cached result must be stable across calls
+        let first = is_wsl2();
+        let second = is_wsl2();
+        assert_eq!(first, second, "is_wsl2() must return consistent results");
+    }
+
+    #[test]
+    fn test_detect_wsl2_matches_indicators() {
+        // Verify detection agrees with the raw indicators
+        let has_interop =
+            std::path::Path::new("/proc/sys/fs/binfmt_misc/WSLInterop").exists();
+        let has_env = std::env::var_os("WSL_DISTRO_NAME").is_some();
+
+        if has_interop || has_env {
+            assert!(
+                is_wsl2(),
+                "WSL2 indicators present but is_wsl2() returned false"
+            );
+        }
+        // Note: we don't assert the negative because the OnceLock cache
+        // may have been populated by another test or indicator.
+    }
+
+    #[test]
+    fn test_wsl2_feature_matrix_detect() {
+        let matrix = Wsl2FeatureMatrix::detect();
+
+        // The matrix's is_wsl2 field must match the standalone function
+        assert_eq!(matrix.is_wsl2, is_wsl2());
+
+        // Block-all network is always available (seccomp RET_ERRNO)
+        assert!(
+            matrix.block_all_network,
+            "block_all_network must always be true"
+        );
+
+        if matrix.is_wsl2 {
+            // On WSL2, seccomp-notify-dependent features must be unavailable
+            assert!(
+                !matrix.supervisor_mode,
+                "supervisor_mode must be unavailable on WSL2"
+            );
+            assert!(
+                !matrix.proxy_network_filter,
+                "proxy_network_filter must be unavailable on WSL2"
+            );
+            assert!(
+                !matrix.capability_expansion,
+                "capability_expansion must be unavailable on WSL2"
+            );
+        } else {
+            // On native Linux, seccomp-notify features should be available
+            assert!(
+                matrix.supervisor_mode,
+                "supervisor_mode must be available on native Linux"
+            );
+            assert!(
+                matrix.proxy_network_filter,
+                "proxy_network_filter must be available on native Linux"
+            );
+            assert!(
+                matrix.capability_expansion,
+                "capability_expansion must be available on native Linux"
+            );
+        }
+    }
+
+    #[test]
+    fn test_wsl2_feature_matrix_summary_not_empty() {
+        let matrix = Wsl2FeatureMatrix::detect();
+        let summary = matrix.summary();
+        assert!(!summary.is_empty(), "summary must not be empty");
+
+        if matrix.is_wsl2 {
+            assert!(
+                summary.contains("WSL2"),
+                "WSL2 summary must mention WSL2"
+            );
+            assert!(
+                summary.contains("EBUSY") || summary.contains("WSL#9548"),
+                "WSL2 summary must reference the seccomp notify issue"
+            );
+        } else {
+            assert!(
+                summary.contains("Native Linux"),
+                "native summary must say Native Linux"
+            );
+        }
+    }
+
+    #[test]
+    fn test_wsl2_feature_matrix_filesystem_matches_landlock() {
+        let matrix = Wsl2FeatureMatrix::detect();
+        // filesystem_sandbox should match whether Landlock is available
+        assert_eq!(
+            matrix.filesystem_sandbox,
+            is_supported(),
+            "filesystem_sandbox must match is_supported()"
+        );
+    }
+
+    #[test]
+    fn test_wsl2_per_port_matches_abi_v4() {
+        let matrix = Wsl2FeatureMatrix::detect();
+        let has_v4_network = detect_abi()
+            .ok()
+            .is_some_and(|abi| abi.has_network());
+        assert_eq!(
+            matrix.per_port_network, has_v4_network,
+            "per_port_network must match Landlock V4 network support"
         );
     }
 }
