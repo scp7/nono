@@ -49,6 +49,8 @@ pub mod capability;
 pub mod diagnostic;
 pub mod error;
 pub mod keystore;
+pub mod manifest;
+pub mod manifest_convert;
 pub mod net_filter;
 pub mod query;
 pub mod sandbox;
