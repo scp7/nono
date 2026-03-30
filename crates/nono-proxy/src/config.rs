@@ -223,15 +223,21 @@ fn endpoint_allowed(rules: &[EndpointRule], method: &str, path: &str) -> bool {
     })
 }
 
-/// Normalize a URL path for matching: strip query string, collapse double
-/// slashes, strip trailing slash (but preserve root "/").
+/// Normalize a URL path for matching: percent-decode, strip query string,
+/// collapse double slashes, strip trailing slash (but preserve root "/").
+///
+/// Percent-decoding prevents bypass via encoded characters (e.g.,
+/// `/api/%70rojects` evading a rule for `/api/projects/*`).
 fn normalize_path(path: &str) -> String {
     // Strip query string
     let path = path.split('?').next().unwrap_or(path);
 
+    // Percent-decode to prevent bypass via encoded segments
+    let decoded = urlencoding::decode(path).unwrap_or_else(|_| path.into());
+
     // Collapse double slashes by splitting on '/' and filtering empties,
     // then rejoin. This also strips trailing slash.
-    let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    let segments: Vec<&str> = decoded.split('/').filter(|s| !s.is_empty()).collect();
     if segments.is_empty() {
         "/".to_string()
     } else {
@@ -528,6 +534,40 @@ mod tests {
         }"#;
         let route: RouteConfig = serde_json::from_str(json).unwrap();
         assert!(route.endpoint_rules.is_empty());
+    }
+
+    #[test]
+    fn test_endpoint_rule_percent_encoded_path_decoded() {
+        // Security: percent-encoded segments must not bypass rules.
+        // e.g., /api/v4/%70rojects should match a rule for /api/v4/projects/*
+        let rule = EndpointRule {
+            method: "GET".to_string(),
+            path: "/api/v4/projects/*/issues".to_string(),
+        };
+        assert!(check(&rule, "GET", "/api/v4/%70rojects/123/issues"));
+        assert!(check(&rule, "GET", "/api/v4/pro%6Aects/123/issues"));
+    }
+
+    #[test]
+    fn test_endpoint_rule_percent_encoded_full_segment() {
+        let rule = EndpointRule {
+            method: "POST".to_string(),
+            path: "/api/data".to_string(),
+        };
+        // %64%61%74%61 = "data"
+        assert!(check(&rule, "POST", "/api/%64%61%74%61"));
+    }
+
+    #[test]
+    fn test_compiled_endpoint_rules_percent_encoded() {
+        let rules = vec![EndpointRule {
+            method: "GET".to_string(),
+            path: "/repos/*/issues".to_string(),
+        }];
+        let compiled = CompiledEndpointRules::compile(&rules).unwrap();
+        // %69ssues = "issues"
+        assert!(compiled.is_allowed("GET", "/repos/myrepo/%69ssues"));
+        assert!(!compiled.is_allowed("GET", "/repos/myrepo/%70ulls"));
     }
 
     #[test]
