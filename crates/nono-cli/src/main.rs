@@ -2341,6 +2341,177 @@ fn prepare_sandbox(args: &SandboxArgs, silent: bool) -> Result<PreparedSandbox> 
         precreate(&home_path.join(".cache/claude-cli-nodejs"), true);
     }
 
+    // ── Manifest-based path (--config) ────────────────────────────────
+    // When --config is provided, the manifest is the complete sandbox
+    // specification. We skip profile loading, group resolution, CWD
+    // auto-inclusion, and deny overlap validation.
+    //
+    // Network proxy fields (allow_domains, credentials, listen_ports) are
+    // wired to PreparedSandbox so the built-in reverse proxy activates
+    // when mode is "proxy". For external proxy scenarios, the manifest
+    // blocks direct network and the operator provides proxy infrastructure.
+    if let Some(ref config_path) = args.config {
+        let json = std::fs::read_to_string(config_path).map_err(|e| {
+            NonoError::ConfigParse(format!(
+                "failed to read manifest file '{}': {e}",
+                config_path.display()
+            ))
+        })?;
+        let mut manifest = nono::manifest::CapabilityManifest::from_json(&json)?;
+        manifest.validate()?;
+
+        // Expand ~, $HOME, $WORKDIR, $TMPDIR etc. in filesystem paths.
+        // This is a CLI convenience — the library receives absolute paths.
+        // For K8s/container use, manifests should contain absolute paths
+        // and this expansion is a no-op.
+        if let Some(ref mut fs) = manifest.filesystem {
+            let expand_path = |path_str: &str| -> Result<String> {
+                let expanded = profile::expand_vars(path_str, &workdir)?;
+                Ok(expanded.to_string_lossy().into_owned())
+            };
+
+            for grant in &mut fs.grants {
+                grant.path = expand_path(grant.path.as_str())?
+                    .parse()
+                    .map_err(|e| NonoError::ConfigParse(format!("invalid path: {e}")))?;
+            }
+            for deny in &mut fs.deny {
+                deny.path = expand_path(deny.path.as_str())?
+                    .parse()
+                    .map_err(|e| NonoError::ConfigParse(format!("invalid path: {e}")))?;
+            }
+        }
+
+        let mut caps = CapabilitySet::try_from(&manifest)?;
+        caps.deduplicate();
+
+        // Validate deny/grant overlaps on Linux (Landlock cannot enforce
+        // deny-within-allow). This catches misconfigured manifests early
+        // rather than silently dropping the deny.
+        let manifest_deny_paths: Vec<std::path::PathBuf> = manifest
+            .filesystem
+            .as_ref()
+            .map(|fs| {
+                fs.deny
+                    .iter()
+                    .map(|d| std::path::PathBuf::from(d.path.as_str()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        policy::validate_deny_overlaps(&manifest_deny_paths, &caps)?;
+
+        // Protected roots validation still applies — a manifest should not
+        // grant access to security-critical system paths without warning.
+        let protected_roots = protected_paths::ProtectedRoots::from_defaults()?;
+        protected_paths::validate_caps_against_protected_roots(&caps, protected_roots.as_paths())?;
+
+        // Extract rollback config from manifest
+        let (rollback_exclude_patterns, rollback_exclude_globs) =
+            if let Some(ref rb) = manifest.rollback {
+                (rb.exclude_patterns.clone(), rb.exclude_globs.clone())
+            } else {
+                (Vec::new(), Vec::new())
+            };
+
+        // Print capability summary
+        output::print_capabilities(&caps, args.verbose, silent);
+
+        #[cfg(target_os = "linux")]
+        output::print_abi_info(silent);
+
+        if !Sandbox::is_supported() {
+            return Err(NonoError::SandboxInit(Sandbox::support_info().details));
+        }
+        info!("{}", Sandbox::support_info().details);
+
+        // Wire proxy fields from manifest so the proxy machinery activates.
+        let manifest_allow_domain = manifest
+            .network
+            .as_ref()
+            .map_or_else(Vec::new, |n| n.allow_domains.clone());
+
+        let manifest_listen_ports: Vec<u16> = manifest
+            .network
+            .as_ref()
+            .and_then(|n| n.ports.as_ref())
+            .map_or_else(Vec::new, |p| {
+                p.bind
+                    .iter()
+                    .filter_map(|v| u16::try_from(v.get()).ok())
+                    .collect()
+            });
+
+        // Convert manifest credentials → profile CustomCredentialDef for the proxy
+        let mut manifest_custom_credentials = std::collections::HashMap::new();
+        for cred in &manifest.credentials {
+            let inject_mode =
+                cred.inject
+                    .as_ref()
+                    .map_or(crate::profile::InjectMode::Header, |inj| match inj.mode {
+                        nono::manifest::InjectMode::Header => crate::profile::InjectMode::Header,
+                        nono::manifest::InjectMode::UrlPath => crate::profile::InjectMode::UrlPath,
+                        nono::manifest::InjectMode::QueryParam => {
+                            crate::profile::InjectMode::QueryParam
+                        }
+                        nono::manifest::InjectMode::BasicAuth => {
+                            crate::profile::InjectMode::BasicAuth
+                        }
+                    });
+
+            let inject = cred.inject.as_ref();
+            let custom_def = crate::profile::CustomCredentialDef {
+                upstream: cred.upstream.to_string(),
+                credential_key: cred.source.to_string(),
+                inject_mode,
+                inject_header: inject
+                    .map(|i| i.header.clone())
+                    .unwrap_or_else(|| "Authorization".to_string()),
+                credential_format: inject
+                    .map(|i| i.format.clone())
+                    .unwrap_or_else(|| "Bearer {}".to_string()),
+                path_pattern: inject.and_then(|i| i.path_pattern.clone()),
+                path_replacement: inject.and_then(|i| i.path_replacement.clone()),
+                query_param_name: inject.and_then(|i| i.query_param_name.clone()),
+                env_var: cred.env_var.as_ref().map(|v| v.to_string()),
+                endpoint_rules: cred
+                    .endpoint_rules
+                    .iter()
+                    .map(|r| nono_proxy::config::EndpointRule {
+                        method: r.method.to_string(),
+                        path: r.path.to_string(),
+                    })
+                    .collect(),
+            };
+            manifest_custom_credentials.insert(cred.name.to_string(), custom_def);
+        }
+
+        return Ok(PreparedSandbox {
+            caps,
+            secrets: Vec::new(),
+            rollback_exclude_patterns,
+            rollback_exclude_globs,
+            skip_dirs: Vec::new(),
+            // No network_profile name — the manifest is fully resolved, so
+            // there is no named profile to look up.  The proxy is activated
+            // by the ProxyOnly network mode and/or non-empty allow_domain.
+            network_profile: None,
+            allow_domain: manifest_allow_domain,
+            credentials: Vec::new(),
+            custom_credentials: manifest_custom_credentials,
+            upstream_proxy: None,
+            upstream_bypass: Vec::new(),
+            listen_ports: manifest_listen_ports,
+            capability_elevation: false,
+            #[cfg(target_os = "linux")]
+            wsl2_proxy_policy: crate::profile::Wsl2ProxyPolicy::default(),
+            allow_launch_services_active: false,
+            open_url_origins: Vec::new(),
+            open_url_allow_localhost: false,
+            override_deny_paths: Vec::new(),
+        });
+    }
+
+    // ── Profile / CLI-flag path ─────────────────────────────────────────
     // Build capabilities from profile or arguments.
     // Unlink overrides are deferred so they can cover the CWD path added below.
     let (mut caps, needs_unlink_overrides) = if let Some(ref prof) = loaded_profile {

@@ -373,6 +373,15 @@ pub struct PolicyShowArgs {
     /// Show raw paths before expansion (e.g., $HOME instead of /Users/luke)
     #[arg(long)]
     pub raw: bool,
+    /// Output format: 'profile' (default) or 'manifest' (capability manifest JSON)
+    #[arg(long, value_enum, value_name = "FORMAT")]
+    pub format: Option<PolicyShowFormat>,
+}
+
+#[derive(clap::ValueEnum, Clone, Debug)]
+pub enum PolicyShowFormat {
+    Profile,
+    Manifest,
 }
 
 #[derive(Parser, Debug)]
@@ -658,8 +667,22 @@ pub struct SandboxArgs {
     #[arg(long, help_heading = "OPTIONS")]
     pub allow_launch_services: bool,
 
-    /// Configuration file path
-    #[arg(long, short = 'c', value_name = "FILE", help_heading = "OPTIONS")]
+    /// Capability manifest file (JSON). A fully-resolved sandbox specification —
+    /// mutually exclusive with all other sandbox configuration flags.
+    #[arg(
+        long,
+        short = 'c',
+        value_name = "FILE",
+        conflicts_with_all = &[
+            "allow", "read", "write", "allow_file", "read_file", "write_file",
+            "profile", "override_deny", "allow_cwd",
+            "block_net", "allow_net", "network_profile", "allow_proxy",
+            "allow_bind", "allow_port", "external_proxy", "proxy_port",
+            "proxy_credential", "allow_endpoint", "env_credential", "env_credential_map",
+            "allow_command", "block_command", "allow_launch_services",
+        ],
+        help_heading = "OPTIONS"
+    )]
     pub config: Option<PathBuf>,
 
     /// Enable verbose output
@@ -801,8 +824,21 @@ pub struct WrapSandboxArgs {
     #[arg(long, help_heading = "OPTIONS")]
     pub allow_launch_services: bool,
 
-    /// Configuration file path
-    #[arg(long, short = 'c', value_name = "FILE", help_heading = "OPTIONS")]
+    /// Capability manifest file (JSON). A fully-resolved sandbox specification —
+    /// mutually exclusive with all other sandbox configuration flags.
+    #[arg(
+        long,
+        short = 'c',
+        value_name = "FILE",
+        conflicts_with_all = &[
+            "allow", "read", "write", "allow_file", "read_file", "write_file",
+            "profile", "override_deny", "allow_cwd",
+            "block_net", "allow_bind", "allow_port",
+            "env_credential", "env_credential_map",
+            "allow_command", "block_command", "allow_launch_services",
+        ],
+        help_heading = "OPTIONS"
+    )]
     pub config: Option<PathBuf>,
 
     /// Enable verbose output
