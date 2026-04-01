@@ -100,11 +100,21 @@ impl CredentialStore {
                     Err(e) => return Err(ProxyError::Credential(e.to_string())),
                 };
 
-                // Format header value based on mode
+                // Format header value based on mode.
+                // When inject_header is not "Authorization" (e.g., "PRIVATE-TOKEN",
+                // "X-API-Key"), the credential is injected as-is unless the user
+                // explicitly set a custom format. The default "Bearer {}" only
+                // makes sense for the Authorization header.
+                let effective_format = if route.inject_header != "Authorization"
+                    && route.credential_format == "Bearer {}"
+                {
+                    "{}".to_string()
+                } else {
+                    route.credential_format.clone()
+                };
+
                 let header_value = match route.inject_mode {
-                    InjectMode::Header => {
-                        Zeroizing::new(route.credential_format.replace("{}", &secret))
-                    }
+                    InjectMode::Header => Zeroizing::new(effective_format.replace("{}", &secret)),
                     InjectMode::BasicAuth => {
                         // Base64 encode the credential for Basic auth
                         let encoded =
