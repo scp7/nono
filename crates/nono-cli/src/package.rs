@@ -1,4 +1,4 @@
-//! Package manifest, lockfile, and local store helpers.
+//! Pack manifest, lockfile, and local store helpers.
 
 use crate::profile;
 use chrono::Utc;
@@ -28,6 +28,8 @@ impl PackageRef {
 pub struct PackageManifest {
     pub schema_version: u32,
     pub name: String,
+    #[serde(default = "default_pack_type")]
+    pub pack_type: PackType,
     #[serde(default)]
     pub description: Option<String>,
     #[serde(default)]
@@ -38,6 +40,27 @@ pub struct PackageManifest {
     pub min_nono_version: Option<String>,
     #[serde(default)]
     pub artifacts: Vec<ArtifactEntry>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PackType {
+    Agent,
+    Policy,
+}
+
+impl PackType {
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Agent => "agent pack",
+            Self::Policy => "policy pack",
+        }
+    }
+}
+
+fn default_pack_type() -> PackType {
+    PackType::Agent
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

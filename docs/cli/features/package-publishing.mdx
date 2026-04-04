@@ -1,9 +1,14 @@
 ---
-title: Package Publishing Setup
-description: End-to-end setup for nono packages, trusted publishing, and the GitHub Action
+title: Pack Publishing Setup
+description: End-to-end setup for nono packs, trusted publishing, and the GitHub Action
 ---
 
-This guide is the producer-side setup for nono packages. It covers package layout, trusted publisher registration, GitHub Actions publishing with the `nono-attest` action, and the checks `nono pull` performs on the consumer side.
+This guide is the producer-side setup for nono packs. It covers pack layout, trusted publisher registration, GitHub Actions publishing, and the checks `nono pull` performs on the consumer side.
+
+`Nono packs` is the umbrella term for two pack types:
+
+- `agent packs`: profiles, hooks, `SKILL.md`, instructions, config, helper scripts, and related setup assets.
+- `policy packs`: trust policy, groups, and other enforcement-oriented bundles.
 
 <Tip>
   For the trust model behind this flow, see [Agent Instruction Attestation](/cli/features/trust).
@@ -13,16 +18,16 @@ This guide is the producer-side setup for nono packages. It covers package layou
 
 You need four things in place before publishing works:
 
-1. A package created in the registry.
-2. A package namespace that matches the GitHub org that will publish it.
+1. A pack created in the registry.
+2. A pack namespace that matches the GitHub org that will publish it.
 3. A trusted publisher entry for the exact repository and workflow.
 4. A GitHub Actions workflow with `permissions: id-token: write`.
 
-Namespace binding is enforced. If your package is `acme-corp/claude-code`, the publishing repository must be under `acme-corp/*`.
+Namespace binding is enforced. If your pack is `acme-corp/claude-code`, the publishing repository must be under `acme-corp/*`.
 
-## Step 1: Create the Package Directory
+## Step 1: Create the Pack Directory
 
-A package is a signed bundle of agent-facing artifacts. Today the CLI supports these artifact types:
+An agent pack is a signed bundle of agent-facing artifacts. Today the CLI supports these artifact types:
 
 - `profile`
 - `hook`
@@ -31,7 +36,7 @@ A package is a signed bundle of agent-facing artifacts. Today the CLI supports t
 - `groups`
 - `script`
 
-A minimal package directory might look like this:
+A minimal pack directory might look like this:
 
 ```text
 packages/claude-code/
@@ -56,6 +61,7 @@ Example:
 {
   "schema_version": 1,
   "name": "claude-code",
+  "pack_type": "agent",
   "description": "Sandbox profile, hooks, and trust policy for Claude Code",
   "license": "Apache-2.0",
   "platforms": ["macos", "linux"],
@@ -93,23 +99,23 @@ Example:
 
 Important constraints:
 
-- `name` should match the package name in the registry.
+- `name` should match the pack name in the registry.
 - Every `artifacts[].path` must exactly match an uploaded filename.
 - `profile` artifacts need `install_as`.
 - `groups` artifacts need `prefix`.
 - `instruction` artifacts with `placement: "project"` are copied into the current working directory when users run `nono pull --init`.
 
-## Step 3: Create the Package in the Registry
+## Step 3: Create the Pack in the Registry
 
-Create the package in the registry UI first. You will need:
+Create the pack in the registry UI first. You will need:
 
-- Package name
+- Pack name
 - Description
 - Kind
 - Source GitHub repository
-- Optional repo subpath if the package lives below the repo root
+- Optional repo subpath if the pack lives below the repo root
 
-After the package exists, configure trusted publishing for it.
+After the pack exists, configure trusted publishing for it.
 
 ## Step 4: Register a Trusted Publisher
 
@@ -131,7 +137,7 @@ For `acme-corp/claude-code`, a typical trusted publisher configuration is:
 
 The registry rejects:
 
-- Repositories outside the package namespace org
+- Repositories outside the pack namespace org
 - Workflows outside `.github/workflows/*.yml`
 - OIDC identities that do not match the registered publisher
 - Bundles whose repository or workflow differs from the trusted publisher
@@ -157,7 +163,7 @@ This requires an authenticated session with 2FA on the registry side.
 
 ## Step 5: Add the GitHub Actions Workflow
 
-The reference implementation lives in the registry repository at `action/action.yml` and is named `nono-attest`.
+The reference implementation lives in the registry repository at `action/action.yml` and is published as `agent-sign`.
 
 At a high level the action:
 
@@ -233,7 +239,7 @@ The action accepts these inputs:
 
 Recommended practice:
 
-- Set `path` to the package directory.
+- Set `path` to the pack directory.
 - Set `files` explicitly.
 - Publish from tags and register `ref_pattern: refs/tags/v*`.
 
@@ -304,9 +310,9 @@ On pull, the CLI:
 1. Fetches the pull manifest from the registry.
 2. Downloads artifacts and matching `.bundle` files.
 3. Verifies Sigstore bundles locally.
-4. Verifies the signer repository org matches the package namespace.
-5. Pins signer identity in the local package lockfile.
-6. Installs verified artifacts into the local package store.
+4. Verifies the signer repository org matches the pack namespace.
+5. Pins signer identity in the local pack lockfile.
+6. Installs verified artifacts into the local pack store.
 
 This matters operationally: the registry is part of the distribution path, but the trust decision is made from the signed bundle and publisher identity.
 
@@ -317,7 +323,7 @@ This matters operationally: the registry is part of the distribution path, but t
 Check:
 
 - The repository is in `owner/repo` format.
-- The owner matches the package namespace.
+- The owner matches the pack namespace.
 - The workflow path is under `.github/workflows/`.
 - Your registry session has 2FA enabled and verified.
 

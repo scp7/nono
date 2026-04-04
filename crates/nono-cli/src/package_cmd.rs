@@ -1,4 +1,4 @@
-//! Package command handlers.
+//! Pack command handlers.
 
 use crate::cli::{ListArgs, PullArgs, RemoveArgs, SearchArgs, UpdateArgs};
 use crate::package::{
@@ -56,7 +56,7 @@ pub fn run_pull(args: PullArgs) -> Result<()> {
         &install.external_paths,
     )?;
 
-    print_pull_summary(&package_ref, &pull, &install);
+    print_pull_summary(&package_ref, &manifest, &pull, &install);
     Ok(())
 }
 
@@ -301,7 +301,7 @@ pub fn run_search(args: SearchArgs) -> Result<()> {
     }
 
     if results.is_empty() {
-        println!("No packages found.");
+        println!("No nono packs found.");
         return Ok(());
     }
 
@@ -332,7 +332,7 @@ pub fn run_list(args: ListArgs) -> Result<()> {
         }
 
         if lockfile.packages.is_empty() {
-            println!("No installed packages.");
+            println!("No installed nono packs.");
             return Ok(());
         }
 
@@ -783,8 +783,18 @@ fn update_lockfile(
     package::write_lockfile(&lockfile)
 }
 
-fn print_pull_summary(package_ref: &PackageRef, pull: &PullResponse, install: &InstallSummary) {
-    eprintln!("Pulled {}@{}", package_ref.key(), pull.version);
+fn print_pull_summary(
+    package_ref: &PackageRef,
+    manifest: &PackageManifest,
+    pull: &PullResponse,
+    install: &InstallSummary,
+) {
+    eprintln!(
+        "Pulled {} {}@{}",
+        manifest.pack_type.label(),
+        package_ref.key(),
+        pull.version
+    );
     eprintln!("  Signer: {}", pull.provenance.signer_identity);
     eprintln!("  Repository: {}", pull.provenance.repository);
     eprintln!("  Workflow: {}", pull.provenance.workflow);

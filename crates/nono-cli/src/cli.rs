@@ -47,12 +47,12 @@ const STYLES: Styles = Styles::plain().header(Style::new().bold());
   audit      View audit trail of sandboxed commands
   trust      Manage file trust and attestation
 
-\x1b[1mPACKAGES\x1b[0m
-  pull       Install a signed package from the registry
-  remove     Remove an installed package
-  update     Update installed packages
-  search     Search the registry for packages
-  list       List installed packages
+\x1b[1mPACKS\x1b[0m
+  pull       Install a signed nono pack from the registry
+  remove     Remove an installed nono pack
+  update     Update installed nono packs
+  search     Search the registry for nono packs
+  list       List installed nono packs
 
 \x1b[1mPOLICY & PROFILES\x1b[0m
   policy     Inspect policy groups, profiles, and security rules
@@ -475,7 +475,7 @@ IN-BAND DETACH:
 ")]
     Profile(ProfileCmdArgs),
 
-    /// Install a signed package from the registry
+    /// Install a signed nono pack from the registry
     #[command(help_template = "\
 {about}
 
@@ -491,7 +491,7 @@ IN-BAND DETACH:
 ")]
     Pull(PullArgs),
 
-    /// Remove an installed package
+    /// Remove an installed nono pack
     #[command(help_template = "\
 {about}
 
@@ -505,7 +505,7 @@ IN-BAND DETACH:
 ")]
     Remove(RemoveArgs),
 
-    /// Update installed packages
+    /// Update installed nono packs
     #[command(help_template = "\
 {about}
 
@@ -520,7 +520,7 @@ IN-BAND DETACH:
 ")]
     Update(UpdateArgs),
 
-    /// Search the registry for packages
+    /// Search the registry for nono packs
     #[command(help_template = "\
 {about}
 
@@ -535,7 +535,7 @@ IN-BAND DETACH:
 ")]
     Search(SearchArgs),
 
-    /// List installed packages
+    /// List installed nono packs
     #[command(help_template = "\
 {about}
 
@@ -645,7 +645,7 @@ pub struct SearchArgs {
 #[derive(Parser, Debug)]
 #[command(disable_help_flag = true)]
 pub struct ListArgs {
-    /// Show installed packages
+    /// Show installed nono packs
     #[arg(long, help_heading = "OPTIONS")]
     pub installed: bool,
 
@@ -2950,8 +2950,8 @@ mod tests {
     /// If you add a new command to the `Commands` enum, add it here too.
     const ALL_SUBCOMMANDS: &[&str] = &[
         "setup", "run", "shell", "wrap", "learn", "why", "ps", "stop", "detach", "attach", "logs",
-        "inspect", "prune", "rollback", "audit", "trust", "policy", "profile",
-        "profile", "pull", "remove", "update", "search", "list",
+        "inspect", "prune", "rollback", "audit", "trust", "policy", "profile", "pull", "remove",
+        "update", "search", "list",
     ];
 
     #[test]

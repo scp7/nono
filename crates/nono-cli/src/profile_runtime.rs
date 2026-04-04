@@ -33,12 +33,12 @@ struct PrepareProfileOptions {
     hook_output_silent: bool,
 }
 
-fn install_profile_hooks(profile: &profile::Profile, silent: bool) {
+fn install_profile_hooks(profile_name: Option<&str>, profile: &profile::Profile, silent: bool) {
     if profile.hooks.hooks.is_empty() {
         return;
     }
 
-    match hooks::install_profile_hooks(&profile.hooks.hooks) {
+    match hooks::install_profile_hooks(profile_name, &profile.hooks.hooks) {
         Ok(results) => {
             for (target, result) in results {
                 match result {
@@ -123,7 +123,7 @@ fn prepare_profile_with_options(
     let loaded_profile = if let Some(ref profile_name) = args.profile {
         let profile = profile::load_profile(profile_name)?;
         if options.install_hooks {
-            install_profile_hooks(&profile, options.hook_output_silent);
+            install_profile_hooks(Some(profile_name), &profile, options.hook_output_silent);
         }
         Some(profile)
     } else {
