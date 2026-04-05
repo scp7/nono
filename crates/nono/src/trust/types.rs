@@ -20,9 +20,17 @@ pub const TRUST_POLICY_VERSION: u32 = 1;
 pub struct TrustPolicy {
     /// Policy format version
     pub version: u32,
-    /// Glob patterns identifying files under attestation
+    /// Glob patterns identifying files under attestation (relative to working directory)
     #[serde(alias = "instruction_patterns")]
     pub includes: Vec<String>,
+    /// Explicit file paths at arbitrary locations to attest.
+    ///
+    /// Supports `~` expansion for the home directory. Intended for the user-level
+    /// policy to cover files that live outside any project directory, such as
+    /// shared AI agent skills (e.g. `~/.claude/skills/my-skill/SKILL.md`).
+    /// Each path must have a `.bundle` sidecar signed with `nono trust sign`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<String>,
     /// Trusted publisher identities
     pub publishers: Vec<Publisher>,
     /// Known-malicious file digests
@@ -36,6 +44,7 @@ impl Default for TrustPolicy {
         Self {
             version: 1,
             includes: Vec::new(),
+            files: Vec::new(),
             publishers: Vec::new(),
             blocklist: Blocklist::default(),
             enforcement: Enforcement::default(),
@@ -48,6 +57,8 @@ impl TrustPolicy {
     const MAX_BLOCKLIST_ENTRIES: usize = 10_000;
     /// Maximum number of include patterns to prevent regex compilation exhaustion.
     const MAX_INCLUDES: usize = 100;
+    /// Maximum number of explicit file paths.
+    const MAX_FILES: usize = 1_000;
     /// Maximum number of publishers.
     const MAX_PUBLISHERS: usize = 1_000;
 
@@ -76,6 +87,13 @@ impl TrustPolicy {
                 "includes has {} entries (max {})",
                 self.includes.len(),
                 Self::MAX_INCLUDES
+            )));
+        }
+        if self.files.len() > Self::MAX_FILES {
+            return Err(NonoError::TrustPolicy(format!(
+                "files has {} entries (max {})",
+                self.files.len(),
+                Self::MAX_FILES
             )));
         }
         if self.publishers.len() > Self::MAX_PUBLISHERS {
@@ -489,6 +507,7 @@ mod tests {
                 ".github/copilot-instructions.md".to_string(),
                 ".claude/**/*.md".to_string(),
             ],
+            files: vec![],
             publishers: vec![
                 Publisher {
                     name: "ci-publisher".to_string(),

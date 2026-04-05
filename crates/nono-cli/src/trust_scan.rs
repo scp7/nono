@@ -423,6 +423,37 @@ pub fn run_pre_exec_scan(
         results.push(result);
     }
 
+    // Verify explicit `files` entries from the trust policy.
+    // These are absolute paths (with optional `~` expansion) that live outside
+    // the working directory, such as shared AI agent skills.
+    for raw_path in &policy.files {
+        let expanded = expand_home(raw_path);
+        let file_path = std::path::PathBuf::from(&expanded);
+
+        // Skip if already verified via the multi-subject bundle above
+        if let Ok(canon) = std::fs::canonicalize(&file_path) {
+            if multi_verified_paths.contains(&canon) {
+                continue;
+            }
+        }
+
+        let result = verify_instruction_file(&file_path, policy);
+
+        if !silent {
+            print_verification_line(&file_path, &file_path, &result, policy.enforcement);
+        }
+
+        if result.outcome.is_verified() {
+            verified = verified.saturating_add(1);
+        } else if result.outcome.should_block(policy.enforcement) {
+            blocked = blocked.saturating_add(1);
+        } else {
+            warned = warned.saturating_add(1);
+        }
+
+        results.push(result);
+    }
+
     if !silent && !results.is_empty() {
         print_scan_summary(verified, blocked, warned, policy.enforcement);
     }
@@ -433,6 +464,23 @@ pub fn run_pre_exec_scan(
         blocked,
         warned,
     })
+}
+
+/// Expand a leading `~` to the user's home directory.
+///
+/// Returns the path unchanged if it does not start with `~` or if the home
+/// directory cannot be determined.
+fn expand_home(path: &str) -> String {
+    if let Some(rest) = path.strip_prefix("~/") {
+        if let Some(home) = dirs::home_dir() {
+            return home.join(rest).to_string_lossy().into_owned();
+        }
+    } else if path == "~" {
+        if let Some(home) = dirs::home_dir() {
+            return home.to_string_lossy().into_owned();
+        }
+    }
+    path.to_string()
 }
 
 /// Returns true if a pattern contains glob metacharacters (`*`, `?`, `[`, `{`).

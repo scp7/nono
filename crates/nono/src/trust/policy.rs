@@ -73,6 +73,9 @@ pub fn merge_policies(policies: &[TrustPolicy]) -> Result<TrustPolicy> {
     let mut merged_patterns: Vec<String> = Vec::new();
     let mut seen_patterns: HashSet<String> = HashSet::new();
 
+    let mut merged_files: Vec<String> = Vec::new();
+    let mut seen_files: HashSet<String> = HashSet::new();
+
     let mut merged_publishers: Vec<Publisher> = Vec::new();
     let mut seen_publisher_names: HashSet<String> = HashSet::new();
 
@@ -89,6 +92,13 @@ pub fn merge_policies(policies: &[TrustPolicy]) -> Result<TrustPolicy> {
         for pattern in &policy.includes {
             if seen_patterns.insert(pattern.clone()) {
                 merged_patterns.push(pattern.clone());
+            }
+        }
+
+        // Merge explicit file paths (deduplicate by path string)
+        for file in &policy.files {
+            if seen_files.insert(file.clone()) {
+                merged_files.push(file.clone());
             }
         }
 
@@ -127,6 +137,7 @@ pub fn merge_policies(policies: &[TrustPolicy]) -> Result<TrustPolicy> {
     Ok(TrustPolicy {
         version: policies.iter().map(|p| p.version).max().unwrap_or(1),
         includes: merged_patterns,
+        files: merged_files,
         publishers: merged_publishers,
         blocklist: Blocklist {
             digests: merged_digest_entries,
@@ -391,6 +402,7 @@ mod tests {
         TrustPolicy {
             version: 1,
             includes: vec!["SKILLS*".to_string(), "CLAUDE*".to_string()],
+            files: vec![],
             publishers,
             blocklist: Blocklist {
                 digests: blocklist_digests,
