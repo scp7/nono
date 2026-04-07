@@ -72,7 +72,8 @@ fn default_bind_addr() -> IpAddr {
 /// Configuration for a reverse proxy credential route.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RouteConfig {
-    /// Path prefix for routing (e.g., "/openai")
+    /// Path prefix for routing (e.g., "openai").
+    /// Must NOT include leading or trailing slashes — it is a bare service name, not a URL path.
     pub prefix: String,
 
     /// Upstream URL to forward to (e.g., "https://api.openai.com")
@@ -541,7 +542,7 @@ mod tests {
     #[test]
     fn test_endpoint_rule_serde_default() {
         let json = r#"{
-            "prefix": "/test",
+            "prefix": "test",
             "upstream": "https://example.com"
         }"#;
         let route: RouteConfig = serde_json::from_str(json).unwrap();
@@ -552,7 +553,7 @@ mod tests {
     #[test]
     fn test_tls_ca_serde_roundtrip() {
         let json = r#"{
-            "prefix": "/k8s",
+            "prefix": "k8s",
             "upstream": "https://kubernetes.local:6443",
             "tls_ca": "/run/secrets/k8s-ca.crt"
         }"#;
