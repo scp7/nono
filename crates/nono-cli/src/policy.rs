@@ -1283,8 +1283,16 @@ mod tests {
             .contains(&"$HOME/.local/share/claude".to_string()));
         assert!(!profile
             .filesystem
-            .read_file
+            .allow_file
             .contains(&"$HOME/Library/Keychains/login.keychain-db".to_string()));
+        assert!(!profile
+            .filesystem
+            .allow_file
+            .contains(&"$HOME/Library/Keychains/metadata.keychain-db".to_string()));
+        assert!(profile
+            .filesystem
+            .allow_file
+            .contains(&"$HOME/.claude.lock".to_string()));
     }
 
     #[test]
@@ -1296,12 +1304,15 @@ mod tests {
             .get("claude_code_macos")
             .expect("claude_code_macos group missing");
         assert_eq!(claude_code_macos.platform.as_deref(), Some("macos"));
-        assert!(claude_code_macos
+        let claude_code_macos_paths = &claude_code_macos
             .allow
             .as_ref()
             .expect("claude_code_macos allow missing")
-            .read
+            .readwrite;
+        assert!(claude_code_macos_paths
             .contains(&"$HOME/Library/Keychains/login.keychain-db".to_string()));
+        assert!(claude_code_macos_paths
+            .contains(&"$HOME/Library/Keychains/metadata.keychain-db".to_string()));
 
         let claude_code_linux = policy
             .groups

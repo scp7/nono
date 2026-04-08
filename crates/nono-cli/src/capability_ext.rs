@@ -29,11 +29,81 @@ fn try_new_dir(path: &Path, access: AccessMode, label: &str) -> Result<Option<Fs
 fn try_new_file(path: &Path, access: AccessMode, label: &str) -> Result<Option<FsCapability>> {
     match FsCapability::new_file(path, access) {
         Ok(cap) => Ok(Some(cap)),
-        Err(NonoError::PathNotFound(_)) => {
-            warn!("{}: {}", label, path.display());
-            Ok(None)
-        }
+        Err(NonoError::PathNotFound(_)) => handle_missing_file_capability(path, access, label),
         Err(e) => Err(e),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn handle_missing_file_capability(
+    path: &Path,
+    access: AccessMode,
+    _label: &str,
+) -> Result<Option<FsCapability>> {
+    let cap = new_future_file_capability(path, access)?;
+    debug!(
+        "Granting future exact file capability on macOS for missing path: {}",
+        path.display()
+    );
+    Ok(Some(cap))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn handle_missing_file_capability(
+    path: &Path,
+    _access: AccessMode,
+    label: &str,
+) -> Result<Option<FsCapability>> {
+    warn!("{}: {}", label, path.display());
+    Ok(None)
+}
+
+#[cfg(target_os = "macos")]
+fn new_future_file_capability(path: &Path, access: AccessMode) -> Result<FsCapability> {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir().map_err(NonoError::Io)?.join(path)
+    };
+
+    Ok(FsCapability {
+        original: path.to_path_buf(),
+        resolved: resolve_missing_leaf_path(&absolute)?,
+        access,
+        is_file: true,
+        source: CapabilitySource::User,
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn resolve_missing_leaf_path(path: &Path) -> Result<PathBuf> {
+    let mut suffix = Vec::new();
+    let mut current = path;
+
+    loop {
+        match current.canonicalize() {
+            Ok(mut canonical) => {
+                for part in suffix.iter().rev() {
+                    canonical.push(part);
+                }
+                return Ok(canonical);
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                let name = current
+                    .file_name()
+                    .ok_or_else(|| NonoError::PathNotFound(path.to_path_buf()))?;
+                suffix.push(name.to_os_string());
+                current = current
+                    .parent()
+                    .ok_or_else(|| NonoError::PathNotFound(path.to_path_buf()))?;
+            }
+            Err(err) => {
+                return Err(NonoError::PathCanonicalization {
+                    path: path.to_path_buf(),
+                    source: err,
+                });
+            }
+        }
     }
 }
 
@@ -90,6 +160,11 @@ pub(crate) fn default_profile_groups() -> Result<Vec<String>> {
     let profile = crate::policy::get_policy_profile("default")?
         .ok_or_else(|| NonoError::ProfileNotFound("default".to_string()))?;
     Ok(profile.security.groups)
+}
+
+#[must_use]
+pub(crate) fn retains_missing_exact_file_grants() -> bool {
+    cfg!(target_os = "macos")
 }
 
 /// Extension trait for CapabilitySet to add CLI-specific construction methods.
@@ -764,6 +839,79 @@ mod tests {
                 cap.is_file && cap.access == AccessMode::Read && cap.resolved == resolved_file
             }),
             "filesystem.read file entries should be granted as read-only file capabilities"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn test_from_profile_allow_file_keeps_missing_exact_file_on_macos() {
+        let dir = tempdir().expect("tmpdir");
+        let missing_file = dir.path().join("future.lock");
+        let expected_resolved = dir.path().canonicalize().expect("canonicalize dir").join(
+            missing_file
+                .file_name()
+                .expect("future file should have file name"),
+        );
+
+        let profile_path = dir.path().join("missing-file-profile.json");
+        std::fs::write(
+            &profile_path,
+            format!(
+                r#"{{
+                "meta": {{ "name": "missing-file-profile" }},
+                "filesystem": {{ "allow_file": ["{}"] }}
+            }}"#,
+                missing_file.display()
+            ),
+        )
+        .expect("write profile");
+
+        let profile = crate::profile::load_profile_from_path(&profile_path).expect("load profile");
+        let workdir = tempdir().expect("workdir");
+        let args = sandbox_args();
+
+        let (caps, _) = from_profile_locked(&profile, workdir.path(), &args).expect("build caps");
+
+        assert!(
+            caps.fs_capabilities().iter().any(|cap| {
+                cap.is_file
+                    && cap.access == AccessMode::ReadWrite
+                    && cap.original == missing_file
+                    && cap.resolved == expected_resolved
+            }),
+            "macOS profiles should preserve explicit missing exact-file grants"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn test_from_args_allow_file_resolves_parent_symlinks_for_missing_file_on_macos() {
+        let dir = tempdir().expect("tmpdir");
+        let target_dir = dir.path().join("target");
+        let link_dir = dir.path().join("link");
+        std::fs::create_dir_all(&target_dir).expect("create target dir");
+        std::os::unix::fs::symlink(&target_dir, &link_dir).expect("create symlink");
+
+        let missing_file = link_dir.join("future.lock");
+        let resolved_file = target_dir
+            .canonicalize()
+            .expect("canonicalize target dir")
+            .join("future.lock");
+        let args = SandboxArgs {
+            allow_file: vec![missing_file.clone()],
+            ..sandbox_args()
+        };
+
+        let (caps, _) = from_args_locked(&args).expect("build caps");
+
+        assert!(
+            caps.fs_capabilities().iter().any(|cap| {
+                cap.is_file
+                    && cap.access == AccessMode::ReadWrite
+                    && cap.original == missing_file
+                    && cap.resolved == resolved_file
+            }),
+            "macOS CLI exact-file grants should preserve original path and resolve parent symlinks"
         );
     }
 

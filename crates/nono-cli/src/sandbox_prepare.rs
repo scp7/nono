@@ -34,17 +34,17 @@ fn collect_missing_cli_requested_paths(args: &SandboxArgs) -> Vec<String> {
         }
     }
     for path in &args.allow_file {
-        if !path.exists() {
+        if !path.exists() && !capability_ext::retains_missing_exact_file_grants() {
             missing.push(format!("--allow-file {}", path.display()));
         }
     }
     for path in &args.read_file {
-        if !path.exists() {
+        if !path.exists() && !capability_ext::retains_missing_exact_file_grants() {
             missing.push(format!("--read-file {}", path.display()));
         }
     }
     for path in &args.write_file {
-        if !path.exists() {
+        if !path.exists() && !capability_ext::retains_missing_exact_file_grants() {
             missing.push(format!("--write-file {}", path.display()));
         }
     }
@@ -411,4 +411,42 @@ pub(crate) fn prepare_sandbox(args: &SandboxArgs, silent: bool) -> Result<Prepar
         args,
         silent,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn missing_exact_file_cli_grants_are_not_reported_as_skipped() {
+        let dir = tempdir().expect("tmpdir");
+        let args = SandboxArgs {
+            allow_file: vec![dir.path().join("future.lock")],
+            ..SandboxArgs::default()
+        };
+
+        assert!(
+            collect_missing_cli_requested_paths(&args).is_empty(),
+            "macOS exact-file grants should not be reported as skipped when the file is absent"
+        );
+    }
+
+    #[test]
+    fn missing_directory_cli_grants_are_reported_as_skipped() {
+        let dir = tempdir().expect("tmpdir");
+        let args = SandboxArgs {
+            allow: vec![dir.path().join("future-dir")],
+            ..SandboxArgs::default()
+        };
+
+        assert_eq!(
+            collect_missing_cli_requested_paths(&args),
+            vec![format!(
+                "--allow {}",
+                dir.path().join("future-dir").display()
+            )]
+        );
+    }
 }
