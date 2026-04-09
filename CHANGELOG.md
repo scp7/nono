@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.30.1] - 2026-04-09
+
+### Bug Fixes
+
+- *(cli)* Handle profile allow_file entries resolving to directories
+
+- *(cli)* Handle profile allow_file entries resolving to directories
+
 ## [0.30.0] - 2026-04-08
 
 ### Bug Fixes
