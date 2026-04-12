@@ -108,7 +108,7 @@ pub(crate) fn execute_sandboxed(plan: LaunchPlan) -> Result<()> {
     {
         return Err(NonoError::BlockedCommand {
             command: blocked,
-            reason: command_blocking_deprecation::blocked_command_reason(),
+            reason: command_blocking_deprecation::BLOCKED_COMMAND_REASON.to_string(),
         });
     }
 

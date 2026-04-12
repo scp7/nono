@@ -8,24 +8,25 @@ const DEPRECATION_SUMMARY: &str =
     "deprecated in v0.33.0: startup-only command gating, not kernel-enforced. \
      Child processes can bypass it. Prefer resource-based controls such as \
      add_deny_access, narrower filesystem grants, unlink_protection, and network policy.";
+pub(crate) const BLOCKED_COMMAND_REASON: &str =
+    "Command blocking is deprecated in v0.33.0 and only checks the directly-invoked \
+     startup command. Child processes can bypass it. Prefer resource-based controls \
+     such as add_deny_access, narrower filesystem grants, unlink_protection, and \
+     network policy.";
 
 fn format_commands(commands: &[String]) -> String {
     commands.join(", ")
 }
 
 fn warning_for_surface(surface: &str, commands: &[String]) -> String {
-    format!(
-        "{surface} is {DEPRECATION_SUMMARY} Configured commands: {}.",
-        format_commands(commands)
-    )
-}
-
-pub(crate) fn blocked_command_reason() -> String {
-    "Command blocking is deprecated in v0.33.0 and only checks the directly-invoked \
-     startup command. Child processes can bypass it. Prefer resource-based controls \
-     such as add_deny_access, narrower filesystem grants, unlink_protection, and \
-     network policy."
-        .to_string()
+    if commands.is_empty() {
+        format!("{surface} is {DEPRECATION_SUMMARY}")
+    } else {
+        format!(
+            "{surface} is {DEPRECATION_SUMMARY} Configured commands: {}.",
+            format_commands(commands)
+        )
+    }
 }
 
 pub(crate) fn collect_cli_warnings(cli: &Cli) -> Vec<String> {
@@ -141,6 +142,14 @@ mod tests {
         assert!(warnings[0].contains("rm, chmod"));
         assert!(warnings[1].contains("`--block-command`"));
         assert!(warnings[1].contains("docker"));
+    }
+
+    #[test]
+    fn warning_for_surface_omits_empty_command_list_suffix() {
+        let warning = warning_for_surface("CLI flag `--block-command`", &[]);
+
+        assert!(warning.contains("CLI flag `--block-command`"));
+        assert!(!warning.contains("Configured commands:"));
     }
 
     #[test]
