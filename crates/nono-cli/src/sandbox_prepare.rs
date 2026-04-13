@@ -685,9 +685,7 @@ pub(crate) fn prepare_sandbox(args: &SandboxArgs, silent: bool) -> Result<Prepar
                         "Failed to move ~/.claude.json to ~/.claude/claude.json: {}",
                         e
                     );
-                } else if let Err(e) =
-                    std::os::unix::fs::symlink(&redirect_target, &claude_json)
-                {
+                } else if let Err(e) = std::os::unix::fs::symlink(&redirect_target, &claude_json) {
                     warn!("Failed to create ~/.claude.json symlink: {}", e);
                 }
             } else {
