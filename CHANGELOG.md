@@ -1,5 +1,66 @@
 # Changelog
 
+## [0.34.0] - 2026-04-13
+
+### Bug Fixes
+
+- *(gpu)* Grant NVIDIA procfs paths required for CUDA init under --allow-gpu
+
+- *(gpu)* Add nvidia-uvm-tools to GPU device allowlist
+
+- *(proxy)* Add missing proxy field in regression tests
+
+- *(network-policy)* Activate anthropic credential in claude-code profile
+
+- *(proxy)* Set ANTHROPIC_API_KEY phantom token for anthropic credential
+
+- *(sandbox)* Use relative path for ~/.claude.json symlink
+
+- *(sandbox)* Redirect ~/.claude.json to ~/.claude/ via symlink on all unix platforms
+
+
+### Dependencies
+
+- *(deps)* Bump rustls from 0.23.37 to 0.23.38
+
+- *(deps)* Bump similar from 2.7.0 to 3.1.0
+
+- *(deps)* Bump rand from 0.10.0 to 0.10.1
+
+- *(deps)* Bump always-further/agent-sign from 0.0.8 to 0.0.11
+
+- *(deps)* Bump peter-evans/repository-dispatch from 3.0.0 to 4.0.1
+
+- *(deps)* Bump docker/build-push-action from 7.0.0 to 7.1.0
+
+- *(deps)* Bump softprops/action-gh-release from 2.6.1 to 3.0.0
+
+- *(deps)* Bump actions/upload-artifact from 7.0.0 to 7.0.1
+
+
+### Features
+
+- *(macos)* Auto-enable claude launch services, refine keychain access
+
+
+### Refactoring
+
+- *(policy)* Improve seatbelt path regex escaping
+
+
+### Testing
+
+- *(gpu)* Add unit + integration coverage for NVIDIA procfs grants
+
+- *(gpu)* Extract is_nvidia_compute_device predicate and add unit tests
+
+- *(proxy)* Add regression test for issue #624 phantom token bug
+
+
+### Style
+
+- Fix rustfmt formatting in sandbox_prepare.rs
+
 ## [0.33.0] - 2026-04-12
 
 ### Bug Fixes
