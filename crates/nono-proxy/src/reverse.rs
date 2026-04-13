@@ -947,7 +947,16 @@ fn strip_proxy_path_token(path: &str, pattern: &str) -> String {
     }
     let (prefix, suffix) = (parts[0], parts[1]);
 
-    if let Some(start) = path.find(prefix) {
+    // Prefer matching at the start of the path to avoid false hits on
+    // common prefixes like "/" that would otherwise match at position 0
+    // even if the intended token is in a later segment.
+    let start = if path.starts_with(prefix) {
+        Some(0)
+    } else {
+        path.find(prefix)
+    };
+
+    if let Some(start) = start {
         let after_prefix = start + prefix.len();
         let end_offset = if suffix.is_empty() {
             path[after_prefix..]
@@ -963,12 +972,21 @@ fn strip_proxy_path_token(path: &str, pattern: &str) -> String {
         let before = &path[..start];
         let after = &path[after_prefix + end_offset + suffix.len()..];
 
-        // Ensure the result has a leading slash
-        let result = format!("{}{}", before, after);
-        if result.is_empty() || !result.starts_with('/') {
-            format!("/{}", result)
+        // Join before and after with exactly one separator to avoid
+        // malformed paths: "/prefixapi" (missing slash) or "/api//v1"
+        // (double slash) when the stripped segment was mid-path.
+        let joined = match (before.ends_with('/'), after.starts_with('/')) {
+            (true, true) => format!("{}{}", before, &after[1..]),
+            (false, false) if !before.is_empty() && !after.is_empty() => {
+                format!("{}/{}", before, after)
+            }
+            _ => format!("{}{}", before, after),
+        };
+
+        if joined.is_empty() || !joined.starts_with('/') {
+            format!("/{}", joined)
         } else {
-            result
+            joined
         }
     } else {
         path.to_string()
@@ -1399,6 +1417,20 @@ mod tests {
         // Pattern doesn't match — return path unchanged
         let result = strip_proxy_path_token("/api/v1/pods", "/auth/{}/");
         assert_eq!(result, "/api/v1/pods");
+    }
+
+    #[test]
+    fn test_strip_proxy_path_token_mid_path_slash_join() {
+        // Token in the middle: before="/api" after="data" must join with "/"
+        let result = strip_proxy_path_token("/api/k8s/PHANTOM/data", "/k8s/{}/");
+        assert_eq!(result, "/api/data");
+    }
+
+    #[test]
+    fn test_strip_proxy_path_token_no_double_slash() {
+        // Before ends with "/" and after starts with "/" — collapse to one
+        let result = strip_proxy_path_token("/prefix/PHANTOM//suffix", "/prefix/{}/");
+        assert_eq!(result, "/suffix");
     }
 
     #[test]
