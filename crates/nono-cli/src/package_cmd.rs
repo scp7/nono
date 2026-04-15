@@ -8,8 +8,9 @@ use crate::package::{
 use crate::registry_client::{resolve_registry_url, RegistryClient};
 use chrono::{DateTime, Local, Utc};
 use nono::{NonoError, Result, SignerIdentity};
-use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, HashMap};
+use semver::Version;
+use std::cmp::Ordering;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
@@ -36,10 +37,10 @@ pub fn run_pull(args: PullArgs) -> Result<()> {
     }
 
     let downloads = download_and_verify_artifacts(&client, &package_ref, &pull)?;
-    let manifest = load_manifest(&downloads)?;
+    let manifest = load_manifest(&downloads.artifacts)?;
     validate_manifest(&manifest)?;
 
-    let signer_identity = signer_identity_uri(&downloads[0].signer_identity)?;
+    let signer_identity = signer_identity_uri(&downloads.signer_identity)?;
     enforce_signer_pinning(
         lockfile.packages.get(&package_ref.key()),
         &signer_identity,
@@ -52,7 +53,7 @@ pub fn run_pull(args: PullArgs) -> Result<()> {
         &registry_url,
         &pull,
         &signer_identity,
-        &downloads,
+        &downloads.artifacts,
         &install.external_paths,
     )?;
 
@@ -119,6 +120,14 @@ pub fn run_remove(args: RemoveArgs) -> Result<()> {
 /// Remove files that were installed outside the package store via install_dir.
 fn remove_external_artifacts(pkg: &LockedPackage) {
     for (name, artifact) in &pkg.artifacts {
+        if artifact.artifact_type == ArtifactType::Hook {
+            tracing::info!(
+                "Retaining shared hook script for {} at {:?}",
+                name,
+                artifact.installed_path
+            );
+            continue;
+        }
         if let Some(installed_path) = &artifact.installed_path {
             let path = Path::new(installed_path);
             if path.exists() {
@@ -195,12 +204,6 @@ fn unregister_claude_code_hook(script_filename: &str) -> Result<()> {
             .map_err(|e| NonoError::ConfigParse(format!("failed to serialize settings: {e}")))?;
         fs::write(&settings_path, json).map_err(NonoError::Io)?;
         tracing::info!("Unregistered hook from {}", settings_path.display());
-    }
-
-    // Also remove the script file from ~/.claude/hooks/.
-    let script_path = home.join(".claude").join("hooks").join(fname);
-    if script_path.exists() {
-        let _ = fs::remove_file(&script_path);
     }
 
     Ok(())
@@ -348,13 +351,17 @@ pub fn run_list(args: ListArgs) -> Result<()> {
     ))
 }
 
-#[derive(Clone)]
 struct DownloadedArtifact {
     filename: String,
-    bytes: Vec<u8>,
+    path: PathBuf,
     sha256_digest: String,
-    signer_identity: SignerIdentity,
+}
+
+struct VerifiedDownloads {
+    _tempdir: TempDir,
     bundle_json: String,
+    signer_identity: SignerIdentity,
+    artifacts: Vec<DownloadedArtifact>,
 }
 
 struct InstallSummary {
@@ -384,6 +391,20 @@ fn validate_pull_response(package_ref: &PackageRef, pull: &PullResponse) -> Resu
         });
     }
 
+    let mut filenames = HashSet::with_capacity(pull.artifacts.len());
+    for artifact in &pull.artifacts {
+        validate_relative_path(&artifact.filename)?;
+        if !filenames.insert(artifact.filename.as_str()) {
+            return Err(NonoError::PackageVerification {
+                package: package_ref.key(),
+                reason: format!(
+                    "pull response includes duplicate artifact '{}'",
+                    artifact.filename
+                ),
+            });
+        }
+    }
+
     Ok(())
 }
 
@@ -391,13 +412,14 @@ fn download_and_verify_artifacts(
     client: &RegistryClient,
     package_ref: &PackageRef,
     pull: &PullResponse,
-) -> Result<Vec<DownloadedArtifact>> {
+) -> Result<VerifiedDownloads> {
     let trusted_root = nono::trust::load_production_trusted_root()?;
     let policy = nono::trust::VerificationPolicy::default();
     let bundle_path = Path::new(".nono-trust.bundle");
+    let tempdir = TempDir::new().map_err(NonoError::Io)?;
 
     // Download the single multi-subject bundle for this version
-    let bundle_json = client.download_text(&pull.bundle_url)?;
+    let bundle_json = client.download_bundle(&pull.bundle_url)?;
     let bundle = nono::trust::load_bundle_from_str(&bundle_json, bundle_path)?;
 
     // Extract all subjects from the bundle for digest matching
@@ -429,9 +451,8 @@ fn download_and_verify_artifacts(
     let mut downloads = Vec::with_capacity(pull.artifacts.len());
 
     for artifact in &pull.artifacts {
-        let bytes = client.download_bytes(&artifact.download_url)?;
-
-        let digest = sha256_hex(&bytes);
+        let path = tempdir.path().join(&artifact.filename);
+        let digest = client.download_artifact_to_path(&artifact.download_url, &path)?;
         if digest != artifact.sha256_digest {
             return Err(NonoError::PackageVerification {
                 package: package_ref.key(),
@@ -455,14 +476,17 @@ fn download_and_verify_artifacts(
 
         downloads.push(DownloadedArtifact {
             filename: artifact.filename.clone(),
-            bytes,
+            path,
             sha256_digest: digest,
-            signer_identity: signer_identity.clone(),
-            bundle_json: bundle_json.clone(),
         });
     }
 
-    Ok(downloads)
+    Ok(VerifiedDownloads {
+        _tempdir: tempdir,
+        bundle_json,
+        signer_identity,
+        artifacts: downloads,
+    })
 }
 
 fn load_manifest(downloads: &[DownloadedArtifact]) -> Result<PackageManifest> {
@@ -471,7 +495,8 @@ fn load_manifest(downloads: &[DownloadedArtifact]) -> Result<PackageManifest> {
         .find(|artifact| artifact.filename == "package.json")
         .ok_or_else(|| NonoError::PackageInstall("package is missing package.json".to_string()))?;
 
-    serde_json::from_slice::<PackageManifest>(&manifest.bytes).map_err(|e| {
+    let bytes = fs::read(&manifest.path).map_err(NonoError::Io)?;
+    serde_json::from_slice::<PackageManifest>(&bytes).map_err(|e| {
         NonoError::PackageInstall(format!("failed to parse package.json manifest: {e}"))
     })
 }
@@ -490,7 +515,7 @@ fn validate_manifest(manifest: &PackageManifest) -> Result<()> {
     }
 
     if let Some(min_version) = &manifest.min_nono_version {
-        if compare_versions(env!("CARGO_PKG_VERSION"), min_version).is_lt() {
+        if compare_versions(env!("CARGO_PKG_VERSION"), min_version)?.is_lt() {
             return Err(NonoError::PackageInstall(format!(
                 "package requires nono >= {}, current version is {}",
                 min_version,
@@ -505,7 +530,7 @@ fn validate_manifest(manifest: &PackageManifest) -> Result<()> {
 fn install_package(
     package_ref: &PackageRef,
     manifest: &PackageManifest,
-    downloads: &[DownloadedArtifact],
+    downloads: &VerifiedDownloads,
     init: bool,
 ) -> Result<InstallSummary> {
     let staging_parent = package::package_store_dir()?
@@ -517,8 +542,8 @@ fn install_package(
     fs::create_dir_all(&staging_root).map_err(NonoError::Io)?;
 
     let mut downloaded_by_name: HashMap<&str, &DownloadedArtifact> =
-        HashMap::with_capacity(downloads.len());
-    for artifact in downloads {
+        HashMap::with_capacity(downloads.artifacts.len());
+    for artifact in &downloads.artifacts {
         downloaded_by_name.insert(artifact.filename.as_str(), artifact);
     }
 
@@ -536,7 +561,7 @@ fn install_package(
                 ))
             })?;
         if let Some(ext_path) =
-            install_manifest_artifact(&staging_root, artifact, downloaded.bytes.as_slice())?
+            install_manifest_artifact(&staging_root, artifact, &downloaded.path)?
         {
             external_paths.insert(artifact.path.clone(), ext_path);
         }
@@ -544,7 +569,7 @@ fn install_package(
             && artifact.artifact_type == ArtifactType::Instruction
             && artifact.placement.as_deref() == Some("project")
         {
-            copy_instruction_to_project(artifact, downloaded.bytes.as_slice())?;
+            copy_instruction_to_project(artifact, &downloaded.path)?;
             copied_to_project = copied_to_project.saturating_add(1);
         }
     }
@@ -568,27 +593,28 @@ fn install_package(
     })
 }
 
-fn write_supporting_artifacts(staging_root: &Path, downloads: &[DownloadedArtifact]) -> Result<()> {
-    for artifact in downloads {
+fn write_supporting_artifacts(staging_root: &Path, downloads: &VerifiedDownloads) -> Result<()> {
+    for artifact in &downloads.artifacts {
         if artifact.filename == "package.json" {
             let path = staging_root.join("package.json");
-            fs::write(&path, &artifact.bytes).map_err(NonoError::Io)?;
+            copy_path(&artifact.path, &path)?;
         }
     }
 
     // Write per-artifact bundles into a single JSON array at the pack root
+    let bundle =
+        serde_json::from_str::<serde_json::Value>(&downloads.bundle_json).map_err(|e| {
+            NonoError::PackageInstall(format!("failed to parse trust bundle from registry: {e}"))
+        })?;
     let bundles: Vec<serde_json::Value> = downloads
+        .artifacts
         .iter()
-        .filter_map(|a| {
-            serde_json::from_str::<serde_json::Value>(&a.bundle_json)
-                .ok()
-                .map(|bundle| {
-                    serde_json::json!({
-                        "artifact": a.filename,
-                        "digest": a.sha256_digest,
-                        "bundle": bundle
-                    })
-                })
+        .map(|artifact| {
+            serde_json::json!({
+                "artifact": artifact.filename,
+                "digest": artifact.sha256_digest,
+                "bundle": bundle.clone()
+            })
         })
         .collect();
 
@@ -609,7 +635,7 @@ fn write_supporting_artifacts(staging_root: &Path, downloads: &[DownloadedArtifa
 fn install_manifest_artifact(
     staging_root: &Path,
     artifact: &ArtifactEntry,
-    bytes: &[u8],
+    source_path: &Path,
 ) -> Result<Option<PathBuf>> {
     // Write into the package store (staging root) based on type.
     let store_path = match artifact.artifact_type {
@@ -624,13 +650,13 @@ fn install_manifest_artifact(
             let path = staging_root
                 .join("profiles")
                 .join(format!("{install_name}.json"));
-            write_bytes(&path, bytes)?;
+            copy_path(source_path, &path)?;
             parse_json::<crate::profile::Profile>(&path)?;
             path
         }
         ArtifactType::Hook => {
             let path = staging_root.join("hooks").join(file_name(&artifact.path)?);
-            write_bytes(&path, bytes)?;
+            copy_path(source_path, &path)?;
             ensure_executable(&path)?;
             path
         }
@@ -638,16 +664,14 @@ fn install_manifest_artifact(
             let path = staging_root
                 .join("instructions")
                 .join(file_name(&artifact.path)?);
-            write_bytes(&path, bytes)?;
+            copy_path(source_path, &path)?;
             path
         }
         ArtifactType::TrustPolicy => {
             let path = staging_root.join("trust-policy.json");
-            write_bytes(&path, bytes)?;
-            let content = std::str::from_utf8(bytes).map_err(|e| {
-                NonoError::PackageInstall(format!("trust policy is not valid UTF-8: {e}"))
-            })?;
-            nono::trust::load_policy_from_str(content)?;
+            copy_path(source_path, &path)?;
+            let content = fs::read_to_string(&path).map_err(NonoError::Io)?;
+            nono::trust::load_policy_from_str(&content)?;
             path
         }
         ArtifactType::Groups => {
@@ -658,22 +682,23 @@ fn install_manifest_artifact(
                 ))
             })?;
             let path = staging_root.join("groups.json");
-            write_bytes(&path, bytes)?;
-            validate_groups(bytes, prefix)?;
+            copy_path(source_path, &path)?;
+            let bytes = fs::read(&path).map_err(NonoError::Io)?;
+            validate_groups(&bytes, prefix)?;
             path
         }
         ArtifactType::Script => {
             let path = staging_root
                 .join("scripts")
                 .join(file_name(&artifact.path)?);
-            write_bytes(&path, bytes)?;
+            copy_path(source_path, &path)?;
             ensure_executable(&path)?;
             path
         }
         ArtifactType::Plugin => {
             validate_relative_path(&artifact.path)?;
             let path = staging_root.join(&artifact.path);
-            write_bytes(&path, bytes)?;
+            copy_path(source_path, &path)?;
             if artifact.path.contains("/bin/") || artifact.path.ends_with(".sh") {
                 ensure_executable(&path)?;
             }
@@ -710,7 +735,7 @@ fn install_manifest_artifact(
                     .to_string()
             });
         let dest = expanded.join(&dest_name);
-        write_bytes(&dest, bytes)?;
+        copy_path(source_path, &dest)?;
         if matches!(
             artifact.artifact_type,
             ArtifactType::Hook | ArtifactType::Script
@@ -725,13 +750,13 @@ fn install_manifest_artifact(
     Ok(external_path)
 }
 
-fn copy_instruction_to_project(artifact: &ArtifactEntry, bytes: &[u8]) -> Result<()> {
+fn copy_instruction_to_project(artifact: &ArtifactEntry, source_path: &Path) -> Result<()> {
     let cwd = std::env::current_dir().map_err(NonoError::Io)?;
     let path = cwd.join(file_name(&artifact.path)?);
     if path.exists() {
         return Ok(());
     }
-    fs::write(path, bytes).map_err(NonoError::Io)
+    copy_path(source_path, &path)
 }
 
 fn create_profile_symlinks(package_ref: &PackageRef, manifest: &PackageManifest) -> Result<()> {
@@ -963,11 +988,12 @@ fn parse_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T> {
         .map_err(|e| NonoError::PackageInstall(format!("failed to parse {}: {e}", path.display())))
 }
 
-fn write_bytes(path: &Path, bytes: &[u8]) -> Result<()> {
-    if let Some(parent) = path.parent() {
+fn copy_path(source: &Path, dest: &Path) -> Result<()> {
+    if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent).map_err(NonoError::Io)?;
     }
-    fs::write(path, bytes).map_err(NonoError::Io)
+    fs::copy(source, dest).map_err(NonoError::Io)?;
+    Ok(())
 }
 
 fn ensure_executable(path: &Path) -> Result<()> {
@@ -1040,16 +1066,6 @@ fn validate_relative_path(path: &str) -> Result<()> {
     Ok(())
 }
 
-fn sha256_hex(bytes: &[u8]) -> String {
-    let digest = Sha256::digest(bytes);
-    let mut out = String::with_capacity(digest.len() * 2);
-    for byte in digest {
-        use std::fmt::Write as _;
-        let _ = write!(&mut out, "{byte:02x}");
-    }
-    out
-}
-
 fn current_platform() -> &'static str {
     if cfg!(target_os = "macos") {
         "macos"
@@ -1060,32 +1076,16 @@ fn current_platform() -> &'static str {
     }
 }
 
-fn compare_versions(left: &str, right: &str) -> std::cmp::Ordering {
-    let parse = |value: &str| -> Vec<u64> {
-        value
-            .split('.')
-            .map(|part| {
-                part.split_once('-')
-                    .map(|(base, _)| base)
-                    .unwrap_or(part)
-                    .parse::<u64>()
-                    .unwrap_or(0)
-            })
-            .collect()
-    };
+fn compare_versions(left: &str, right: &str) -> Result<Ordering> {
+    let left = parse_version(left, "current nono version")?;
+    let right = parse_version(right, "min_nono_version")?;
+    Ok(left.cmp(&right))
+}
 
-    let left = parse(left);
-    let right = parse(right);
-    let max_len = left.len().max(right.len());
-    for idx in 0..max_len {
-        let l = *left.get(idx).unwrap_or(&0);
-        let r = *right.get(idx).unwrap_or(&0);
-        match l.cmp(&r) {
-            std::cmp::Ordering::Equal => continue,
-            ordering => return ordering,
-        }
-    }
-    std::cmp::Ordering::Equal
+fn parse_version(value: &str, field: &str) -> Result<Version> {
+    let normalized = value.trim().strip_prefix('v').unwrap_or(value.trim());
+    Version::parse(normalized)
+        .map_err(|error| NonoError::PackageInstall(format!("invalid {field} '{value}': {error}")))
 }
 
 fn format_timestamp(value: &str) -> String {
@@ -1096,4 +1096,69 @@ fn format_timestamp(value: &str) -> String {
                 .to_string()
         })
         .unwrap_or_else(|_| value.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn remove_external_artifacts_preserves_shared_hook_scripts() {
+        let tempdir = TempDir::new().unwrap_or_else(|err| panic!("tempdir failed: {err}"));
+        let hook_path = tempdir.path().join("nono-hook.sh");
+        fs::write(&hook_path, "#!/bin/sh\n").unwrap_or_else(|err| panic!("write failed: {err}"));
+
+        let mut artifacts = BTreeMap::new();
+        artifacts.insert(
+            "hooks/nono-hook.sh".to_string(),
+            LockedArtifact {
+                sha256: "abc123".to_string(),
+                artifact_type: ArtifactType::Hook,
+                installed_path: Some(hook_path.to_string_lossy().into_owned()),
+            },
+        );
+
+        remove_external_artifacts(&LockedPackage {
+            artifacts,
+            ..LockedPackage::default()
+        });
+
+        assert!(hook_path.exists(), "shared hook script should be retained");
+    }
+
+    #[test]
+    fn remove_external_artifacts_still_removes_non_hook_files() {
+        let tempdir = TempDir::new().unwrap_or_else(|err| panic!("tempdir failed: {err}"));
+        let script_path = tempdir.path().join("helper.sh");
+        fs::write(&script_path, "#!/bin/sh\n").unwrap_or_else(|err| panic!("write failed: {err}"));
+
+        let mut artifacts = BTreeMap::new();
+        artifacts.insert(
+            "scripts/helper.sh".to_string(),
+            LockedArtifact {
+                sha256: "abc123".to_string(),
+                artifact_type: ArtifactType::Script,
+                installed_path: Some(script_path.to_string_lossy().into_owned()),
+            },
+        );
+
+        remove_external_artifacts(&LockedPackage {
+            artifacts,
+            ..LockedPackage::default()
+        });
+
+        assert!(!script_path.exists(), "non-hook artifact should be removed");
+    }
+
+    #[test]
+    fn compare_versions_honors_prerelease_ordering() {
+        let prerelease_vs_stable = compare_versions("1.0.0-alpha.1", "1.0.0")
+            .unwrap_or_else(|err| panic!("version compare failed: {err}"));
+        let stable_vs_prerelease = compare_versions("1.0.0", "1.0.0-alpha.1")
+            .unwrap_or_else(|err| panic!("version compare failed: {err}"));
+
+        assert_eq!(prerelease_vs_stable, Ordering::Less);
+        assert_eq!(stable_vs_prerelease, Ordering::Greater);
+    }
 }
