@@ -1,5 +1,62 @@
 # Changelog
 
+## [0.38.0] - 2026-04-20
+
+### Bug Fixes
+
+- *(trust)* Function or associated item not found in `TrustedRoot`
+
+- *(package)* Harden package installation security
+
+- *(hooks)* Invoke bash via env
+
+
+### Documentation
+
+- *(cli-package-publishing)* Add warning for unreleased feature
+
+- *(cli)* Add installation instructions for nix
+
+
+### Features
+
+- *(trust)* Prefer CI_CONFIG_REF_URI for GitLab workflow identity
+
+- *(claude-code)* Remove claude-code integration package
+
+- *(profile)* Add support for loading profiles from registry packs
+
+- *(profile)* Introduce packs and command_args for profiles
+
+- *(pack)* Introduce pack types and unify package naming
+
+- *(package)* Add install_dir artifact placement and hook unregistration
+
+- *(cli)* Add package management commands (pull, remove, search, list)
+
+- Implements environment variables filtering #688
+
+
+### Miscellaneous
+
+- Release v0.37.1
+
+
+### Refactoring
+
+- *(pkg)* Stream package artifact downloads
+
+- *(package)* Simplify artifact signer validation
+
+- *(package-cmd)* Centralize trust bundle for package verification
+
+- *(cli)* Improve artifact path validation
+
+
+### Style
+
+- Cargo fmt
+
 ## [0.37.1] - 2026-04-17
 
 ### Bug Fixes
