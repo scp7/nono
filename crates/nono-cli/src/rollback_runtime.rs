@@ -49,6 +49,47 @@ fn rollback_vcs_exclusions() -> Vec<String> {
         .collect()
 }
 
+fn rollback_exclusion_patterns(rollback: &RollbackLaunchOptions) -> Vec<String> {
+    let mut patterns = if rollback.track_all {
+        rollback_vcs_exclusions()
+    } else {
+        rollback_base_exclusions()
+    };
+    patterns.extend(rollback.exclude_patterns.iter().cloned());
+    patterns.sort_unstable();
+    patterns.dedup();
+    patterns
+}
+
+fn rollback_exclusion_config(
+    rollback: &RollbackLaunchOptions,
+    exclude_patterns: &[String],
+) -> nono::undo::ExclusionConfig {
+    nono::undo::ExclusionConfig {
+        use_gitignore: true,
+        exclude_patterns: exclude_patterns.to_vec(),
+        exclude_globs: rollback.exclude_globs.clone(),
+        force_include: rollback.include.clone(),
+    }
+}
+
+fn build_snapshot_manager(
+    session_dir: PathBuf,
+    tracked_paths: &[PathBuf],
+    exclusion_config: nono::undo::ExclusionConfig,
+) -> Result<nono::undo::SnapshotManager> {
+    let roots = tracked_paths
+        .iter()
+        .map(|tracked_path| {
+            let exclusion =
+                nono::undo::ExclusionFilter::new(exclusion_config.clone(), tracked_path)?;
+            Ok((tracked_path.clone(), exclusion))
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    nono::undo::SnapshotManager::new_per_root(session_dir, roots, nono::undo::WalkBudget::default())
+}
+
 fn enforce_rollback_limits(silent: bool) {
     let config = match config::user::load_user_config() {
         Ok(Some(config)) => config,
@@ -222,7 +263,7 @@ fn derive_tracked_paths(caps: &CapabilitySet) -> Vec<PathBuf> {
         .filter(|cap| {
             !cap.is_file
                 && matches!(cap.access, AccessMode::Write | AccessMode::ReadWrite)
-                && matches!(cap.source, nono::CapabilitySource::User)
+                && cap.source.is_user_intent()
         })
         .map(|cap| cap.resolved.clone())
         .collect()
@@ -236,29 +277,19 @@ fn derive_tracked_paths(caps: &CapabilitySet) -> Vec<PathBuf> {
 pub(crate) fn initialize_audit_snapshots(
     caps: &CapabilitySet,
     audit_state: &AuditState,
+    rollback: &RollbackLaunchOptions,
 ) -> Result<Option<AuditSnapshotState>> {
     let tracked_paths = derive_tracked_paths(caps);
     if tracked_paths.is_empty() {
         return Ok(None);
     }
 
-    let exclusion_config = nono::undo::ExclusionConfig {
-        use_gitignore: true,
-        exclude_patterns: rollback_vcs_exclusions(),
-        exclude_globs: Vec::new(),
-        force_include: Vec::new(),
-    };
-    let gitignore_root = tracked_paths
-        .first()
-        .cloned()
-        .unwrap_or_else(|| PathBuf::from("."));
-    let exclusion = nono::undo::ExclusionFilter::new(exclusion_config, &gitignore_root)?;
-
-    let manager = nono::undo::SnapshotManager::new(
+    let patterns = rollback_exclusion_patterns(rollback);
+    let exclusion_config = rollback_exclusion_config(rollback, &patterns);
+    let manager = build_snapshot_manager(
         audit_state.session_dir.clone(),
-        tracked_paths.clone(),
-        exclusion,
-        nono::undo::WalkBudget::default(),
+        &tracked_paths,
+        exclusion_config,
     )?;
 
     let baseline_root = manager.compute_merkle_root()?;
@@ -296,30 +327,19 @@ pub(crate) fn initialize_rollback_state(
         return Ok(None);
     }
 
-    let mut patterns = if rollback.track_all {
-        rollback_vcs_exclusions()
-    } else {
-        rollback_base_exclusions()
-    };
-    patterns.extend(rollback.exclude_patterns.iter().cloned());
-    patterns.sort_unstable();
-    patterns.dedup();
+    let mut patterns = rollback_exclusion_patterns(rollback);
     let base_patterns = patterns.clone();
-    let exclusion_config = nono::undo::ExclusionConfig {
-        use_gitignore: true,
-        exclude_patterns: patterns,
-        exclude_globs: rollback.exclude_globs.clone(),
-        force_include: rollback.include.clone(),
-    };
-    let gitignore_root = tracked_paths
-        .first()
-        .cloned()
-        .unwrap_or_else(|| PathBuf::from("."));
-    let mut exclusion = nono::undo::ExclusionFilter::new(exclusion_config, &gitignore_root)?;
+    let preflight_exclusion = nono::undo::ExclusionFilter::new(
+        rollback_exclusion_config(rollback, &patterns),
+        &tracked_paths[0],
+    )?;
 
     if !rollback.track_all {
-        let preflight_result =
-            rollback_preflight::run_preflight(&tracked_paths, &exclusion, &rollback.skip_dirs);
+        let preflight_result = rollback_preflight::run_preflight(
+            &tracked_paths,
+            &preflight_exclusion,
+            &rollback.skip_dirs,
+        );
 
         if preflight_result.needs_warning() {
             let auto_excluded: Vec<&rollback_preflight::HeavyDir> = preflight_result
@@ -335,13 +355,7 @@ pub(crate) fn initialize_rollback_state(
                 all_patterns.extend(excluded_names);
                 all_patterns.sort_unstable();
                 all_patterns.dedup();
-                let updated_config = nono::undo::ExclusionConfig {
-                    use_gitignore: true,
-                    exclude_patterns: all_patterns,
-                    exclude_globs: rollback.exclude_globs.clone(),
-                    force_include: rollback.include.clone(),
-                };
-                exclusion = nono::undo::ExclusionFilter::new(updated_config, &gitignore_root)?;
+                patterns = all_patterns;
 
                 if !silent {
                     rollback_preflight::print_auto_exclude_notice(
@@ -353,11 +367,10 @@ pub(crate) fn initialize_rollback_state(
         }
     }
 
-    let mut manager = nono::undo::SnapshotManager::new(
+    let mut manager = build_snapshot_manager(
         session_dir.clone(),
-        tracked_paths.clone(),
-        exclusion,
-        nono::undo::WalkBudget::default(),
+        &tracked_paths,
+        rollback_exclusion_config(rollback, &patterns),
     )?;
 
     let baseline = manager.create_baseline()?;
@@ -464,6 +477,8 @@ pub(crate) fn finalize_supervised_exit(ctx: RollbackExitContext<'_>) -> Result<(
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use nono::{CapabilitySet, CapabilitySource, FsCapability};
+    use std::fs;
 
     #[test]
     fn create_audit_state_returns_none_when_disabled() {
@@ -525,5 +540,141 @@ mod tests {
             .mode()
             & 0o777;
         assert_eq!(mode, 0o700, "session dir should have 0700 permissions");
+    }
+
+    #[test]
+    fn initialize_audit_snapshots_respects_rollback_include_and_exclude() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let tracked = tmp.path().join("tracked");
+        let node_modules = tracked.join("node_modules");
+        fs::create_dir_all(&node_modules).expect("create node_modules");
+        fs::write(tracked.join("keep.txt"), b"keep").expect("write keep");
+        fs::write(node_modules.join("pkg.json"), b"v1").expect("write package");
+
+        let caps = CapabilitySet::new()
+            .allow_path(&tracked, AccessMode::ReadWrite)
+            .expect("allow tracked");
+        let audit_state = AuditState {
+            session_id: "test-session".to_string(),
+            session_dir: tmp.path().join("session"),
+        };
+        fs::create_dir_all(&audit_state.session_dir).expect("create session");
+
+        let excluded_state =
+            initialize_audit_snapshots(&caps, &audit_state, &RollbackLaunchOptions::default())
+                .expect("initialize excluded")
+                .expect("snapshot state");
+
+        fs::write(node_modules.join("pkg.json"), b"v2").expect("modify excluded file");
+        let excluded_root = excluded_state
+            .manager
+            .compute_merkle_root()
+            .expect("compute excluded root");
+        assert_eq!(excluded_state.baseline_root, excluded_root);
+
+        fs::write(node_modules.join("pkg.json"), b"v1").expect("restore excluded file");
+
+        let included_rollback = RollbackLaunchOptions {
+            include: vec!["node_modules".to_string()],
+            ..RollbackLaunchOptions::default()
+        };
+        let included_state = initialize_audit_snapshots(&caps, &audit_state, &included_rollback)
+            .expect("initialize included")
+            .expect("snapshot state");
+
+        fs::write(node_modules.join("pkg.json"), b"v3").expect("modify included file");
+        let included_root = included_state
+            .manager
+            .compute_merkle_root()
+            .expect("compute included root");
+        assert_ne!(included_state.baseline_root, included_root);
+    }
+
+    #[test]
+    fn initialize_audit_snapshots_uses_per_root_gitignore_filters() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root_a = tmp.path().join("root-a");
+        let root_b = tmp.path().join("root-b");
+        fs::create_dir_all(&root_a).expect("create root_a");
+        fs::create_dir_all(&root_b).expect("create root_b");
+        fs::write(root_a.join(".gitignore"), "ignore-a.txt\n").expect("write gitignore a");
+        fs::write(root_b.join(".gitignore"), "ignore-b.txt\n").expect("write gitignore b");
+        fs::write(root_a.join("ignore-a.txt"), b"a1").expect("write ignored a");
+        fs::write(root_b.join("ignore-b.txt"), b"b1").expect("write ignored b");
+        fs::write(root_a.join("visible.txt"), b"visible-a").expect("write visible a");
+        fs::write(root_b.join("visible.txt"), b"visible-b").expect("write visible b");
+
+        let caps = CapabilitySet::new()
+            .allow_path(&root_a, AccessMode::ReadWrite)
+            .and_then(|caps| caps.allow_path(&root_b, AccessMode::ReadWrite))
+            .expect("allow tracked roots");
+        let audit_state = AuditState {
+            session_id: "test-session".to_string(),
+            session_dir: tmp.path().join("session"),
+        };
+        fs::create_dir_all(&audit_state.session_dir).expect("create session");
+
+        let snapshot_state = initialize_audit_snapshots(
+            &caps,
+            &audit_state,
+            &RollbackLaunchOptions {
+                track_all: true,
+                ..RollbackLaunchOptions::default()
+            },
+        )
+        .expect("initialize snapshots")
+        .expect("snapshot state");
+
+        fs::write(root_b.join("ignore-b.txt"), b"b2").expect("modify ignored b");
+        let modified_root = snapshot_state
+            .manager
+            .compute_merkle_root()
+            .expect("compute root");
+        assert_eq!(snapshot_state.baseline_root, modified_root);
+    }
+
+    #[test]
+    fn derive_tracked_paths_includes_profile_writable_directories() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let tracked = tmp.path().join("tracked");
+        let system = tmp.path().join("system");
+        let readonly = tmp.path().join("readonly");
+        let file = tmp.path().join("tracked.txt");
+        fs::create_dir_all(&tracked).expect("create tracked dir");
+        fs::create_dir_all(&system).expect("create system dir");
+        fs::create_dir_all(&readonly).expect("create readonly dir");
+        fs::write(&file, b"content").expect("write tracked file");
+
+        let mut caps = CapabilitySet::new();
+        caps.add_fs(FsCapability {
+            original: tracked.clone(),
+            resolved: tracked.clone(),
+            access: AccessMode::ReadWrite,
+            is_file: false,
+            source: CapabilitySource::Profile,
+        });
+        caps.add_fs(FsCapability {
+            original: system.clone(),
+            resolved: system.clone(),
+            access: AccessMode::ReadWrite,
+            is_file: false,
+            source: CapabilitySource::System,
+        });
+        caps.add_fs(FsCapability {
+            original: readonly.clone(),
+            resolved: readonly.clone(),
+            access: AccessMode::Read,
+            is_file: false,
+            source: CapabilitySource::Profile,
+        });
+        caps.add_fs(FsCapability {
+            original: file.clone(),
+            resolved: file,
+            access: AccessMode::ReadWrite,
+            is_file: true,
+            source: CapabilitySource::Profile,
+        });
+
+        assert_eq!(derive_tracked_paths(&caps), vec![tracked]);
     }
 }

@@ -5,8 +5,10 @@
 //! to a previous state.
 
 use crate::error::{NonoError, Result};
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::io::Read;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
@@ -816,11 +818,7 @@ fn compute_changes(
 /// Get file state from metadata (hash is zeroed - used for walk_current where
 /// we only need to track which files exist for deletion during restore).
 fn file_state_from_metadata(path: &Path) -> Result<FileState> {
-    use sha2::{Digest, Sha256};
-
-    let content = fs::read(path)
-        .map_err(|e| NonoError::Snapshot(format!("Failed to read {}: {e}", path.display())))?;
-    let hash_bytes: [u8; 32] = Sha256::digest(&content).into();
+    let hash = hash_file(path)?;
 
     let metadata = fs::metadata(path).map_err(|e| {
         NonoError::Snapshot(format!(
@@ -830,11 +828,30 @@ fn file_state_from_metadata(path: &Path) -> Result<FileState> {
     })?;
 
     Ok(FileState {
-        hash: super::types::ContentHash::from_bytes(hash_bytes),
+        hash,
         size: metadata.len(),
         mtime: metadata.mtime(),
         permissions: metadata.mode(),
     })
+}
+
+fn hash_file(path: &Path) -> Result<ContentHash> {
+    let mut file = fs::File::open(path)
+        .map_err(|e| NonoError::Snapshot(format!("Failed to open {}: {e}", path.display())))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 8192];
+
+    loop {
+        let bytes_read = file
+            .read(&mut buffer)
+            .map_err(|e| NonoError::Snapshot(format!("Failed to read {}: {e}", path.display())))?;
+        if bytes_read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..bytes_read]);
+    }
+
+    Ok(ContentHash::from_bytes(hasher.finalize().into()))
 }
 
 /// Write content to a file atomically via temp file + rename.
@@ -1114,6 +1131,23 @@ mod tests {
 
         let root_after = manager.compute_merkle_root().expect("compute root after");
         assert_ne!(root_before, root_after);
+    }
+
+    #[test]
+    fn file_state_from_metadata_hashes_large_files() {
+        let dir = TempDir::new().expect("tempdir");
+        let path = dir.path().join("large.bin");
+        let mut content = Vec::new();
+        for idx in 0..20_000 {
+            content.push((idx % 251) as u8);
+        }
+        fs::write(&path, &content).expect("write large file");
+
+        let state = file_state_from_metadata(&path).expect("file state");
+        let expected = ContentHash::from_bytes(sha2::Sha256::digest(&content).into());
+
+        assert_eq!(state.hash, expected);
+        assert_eq!(state.size, content.len() as u64);
     }
 
     #[test]

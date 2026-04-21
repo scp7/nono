@@ -168,7 +168,7 @@ pub(crate) fn execute_supervised_runtime(ctx: SupervisedRuntimeContext<'_>) -> R
     // filesystem state.
     let audit_snapshot_state = if rollback_state.is_none() {
         match audit_state.as_ref() {
-            Some(state) => initialize_audit_snapshots(caps, state)?,
+            Some(state) => initialize_audit_snapshots(caps, state, rollback)?,
             None => None,
         }
     } else {
