@@ -25,6 +25,16 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use tracing::{info, warn};
 
+fn print_allow_domain_port_warnings(entries: &[String], context: &str, silent: bool) {
+    if silent {
+        return;
+    }
+
+    for warning in network_policy::collect_allow_domain_port_warnings(entries, context) {
+        output::print_warning(&warning);
+    }
+}
+
 /// Returns `true` if `profile_name` is `"claude-code"` or transitively extends it.
 fn is_claude_code_profile(profile_name: &str) -> bool {
     fn check(name: &str, visited: &mut Vec<String>) -> bool {
@@ -971,14 +981,7 @@ pub(crate) fn prepare_sandbox(args: &SandboxArgs, silent: bool) -> Result<Prepar
             .as_ref()
             .map(|network| network.allow_domains.clone())
             .unwrap_or_default();
-        if !silent {
-            for warning in network_policy::collect_allow_domain_port_warnings(
-                &allow_domain,
-                "manifest allow_domain",
-            ) {
-                output::print_warning(&warning);
-            }
-        }
+        print_allow_domain_port_warnings(&allow_domain, "manifest allow_domain", silent);
         let credentials = manifest
             .credentials
             .iter()
@@ -1042,19 +1045,8 @@ pub(crate) fn prepare_sandbox(args: &SandboxArgs, silent: bool) -> Result<Prepar
         let profile_warnings = command_blocking_deprecation::collect_profile_warnings(profile);
         command_blocking_deprecation::print_warnings(&profile_warnings, silent);
     }
-    if !silent {
-        for warning in network_policy::collect_allow_domain_port_warnings(
-            &profile_allow_domain,
-            "profile allow_domain",
-        ) {
-            output::print_warning(&warning);
-        }
-        for warning in
-            network_policy::collect_allow_domain_port_warnings(&args.allow_proxy, "--allow-domain")
-        {
-            output::print_warning(&warning);
-        }
-    }
+    print_allow_domain_port_warnings(&profile_allow_domain, "profile allow_domain", silent);
+    print_allow_domain_port_warnings(&args.allow_proxy, "--allow-domain", silent);
 
     #[cfg(unix)]
     if args.profile.as_deref().is_some_and(is_claude_code_profile) {
