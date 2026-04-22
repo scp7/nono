@@ -191,6 +191,18 @@ pub async fn handle_reverse_proxy(
 
     let (upstream_scheme, upstream_host, upstream_port, upstream_path_full) =
         parse_upstream_url(&upstream_url)?;
+    if let Err(reason) = validate_http_upstream_target(upstream_scheme, &upstream_host) {
+        warn!("{}", reason);
+        send_error(stream, 502, "Bad Gateway").await?;
+        audit::log_denied(
+            ctx.audit_log,
+            audit::ProxyMode::Reverse,
+            &service,
+            0,
+            &reason,
+        );
+        return Ok(());
+    }
     let check = ctx.filter.check_host(&upstream_host, upstream_port).await?;
     if !check.result.is_allowed() {
         let reason = check.result.reason();
@@ -214,9 +226,10 @@ pub async fn handle_reverse_proxy(
         None => return Ok(()),
     };
 
+    let upstream_authority = format_host_header(upstream_scheme, &upstream_host, upstream_port);
     let mut request = Zeroizing::new(format!(
         "{} {} {}\r\nHost: {}\r\n",
-        method, upstream_path_full, version, upstream_host
+        method, upstream_path_full, version, upstream_authority
     ));
 
     if let Some(cred) = cred {
@@ -350,6 +363,18 @@ async fn handle_oauth2_credential(
 
     let (upstream_scheme, upstream_host, upstream_port, upstream_path_full) =
         parse_upstream_url(&upstream_url)?;
+    if let Err(reason) = validate_http_upstream_target(upstream_scheme, &upstream_host) {
+        warn!("{}", reason);
+        send_error(stream, 502, "Bad Gateway").await?;
+        audit::log_denied(
+            ctx.audit_log,
+            audit::ProxyMode::Reverse,
+            service,
+            0,
+            &reason,
+        );
+        return Ok(());
+    }
 
     // DNS resolve + host check via the filter
     let check = ctx.filter.check_host(&upstream_host, upstream_port).await?;
@@ -379,9 +404,10 @@ async fn handle_oauth2_credential(
     };
 
     // Build upstream request with Bearer token injection
+    let upstream_authority = format_host_header(upstream_scheme, &upstream_host, upstream_port);
     let mut request = Zeroizing::new(format!(
         "{} {} {}\r\nHost: {}\r\n",
-        method, upstream_path_full, version, upstream_host
+        method, upstream_path_full, version, upstream_authority
     ));
 
     // Inject OAuth2 access token as Authorization: Bearer
@@ -664,6 +690,51 @@ fn extract_content_length(header_bytes: &[u8]) -> Option<usize> {
 enum UpstreamScheme {
     Http,
     Https,
+}
+
+fn validate_http_upstream_target(scheme: UpstreamScheme, host: &str) -> std::result::Result<(), String> {
+    if matches!(scheme, UpstreamScheme::Https) {
+        return Ok(());
+    }
+
+    if is_local_only_host(host) {
+        Ok(())
+    } else {
+        Err(format!(
+            "refusing insecure http upstream for non-local host '{}'; http is only allowed for loopback or unspecified local addresses",
+            host
+        ))
+    }
+}
+
+fn is_local_only_host(host: &str) -> bool {
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+
+    match host.parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V4(ip)) => ip.is_loopback() || ip.is_unspecified(),
+        Ok(std::net::IpAddr::V6(ip)) => ip.is_loopback() || ip.is_unspecified(),
+        Err(_) => false,
+    }
+}
+
+fn format_host_header(scheme: UpstreamScheme, host: &str, port: u16) -> String {
+    let default_port = match scheme {
+        UpstreamScheme::Http => 80,
+        UpstreamScheme::Https => 443,
+    };
+    let bracketed_host = if host.contains(':') && !host.starts_with('[') {
+        format!("[{}]", host)
+    } else {
+        host.to_string()
+    };
+
+    if port == default_port {
+        bracketed_host
+    } else {
+        format!("{}:{}", bracketed_host, port)
+    }
 }
 
 fn parse_upstream_url(url_str: &str) -> Result<(UpstreamScheme, String, u16, String)> {
@@ -1408,6 +1479,44 @@ mod tests {
     #[test]
     fn test_parse_upstream_url_invalid_scheme() {
         assert!(parse_upstream_url("ftp://example.com").is_err());
+    }
+
+    #[test]
+    fn test_validate_http_upstream_target_rejects_non_local_host() {
+        let err = validate_http_upstream_target(UpstreamScheme::Http, "api.example.com")
+            .expect_err("non-local http upstream should be rejected");
+        assert!(err.contains("refusing insecure http upstream"));
+    }
+
+    #[test]
+    fn test_validate_http_upstream_target_allows_loopback() {
+        assert!(validate_http_upstream_target(UpstreamScheme::Http, "127.0.0.1").is_ok());
+        assert!(validate_http_upstream_target(UpstreamScheme::Http, "::1").is_ok());
+        assert!(validate_http_upstream_target(UpstreamScheme::Http, "localhost").is_ok());
+    }
+
+    #[test]
+    fn test_format_host_header_uses_port_for_non_default_http() {
+        assert_eq!(
+            format_host_header(UpstreamScheme::Http, "localhost", 8080),
+            "localhost:8080"
+        );
+    }
+
+    #[test]
+    fn test_format_host_header_omits_default_https_port() {
+        assert_eq!(
+            format_host_header(UpstreamScheme::Https, "api.openai.com", 443),
+            "api.openai.com"
+        );
+    }
+
+    #[test]
+    fn test_format_host_header_brackets_ipv6() {
+        assert_eq!(
+            format_host_header(UpstreamScheme::Http, "::1", 8080),
+            "[::1]:8080"
+        );
     }
 
     #[test]
