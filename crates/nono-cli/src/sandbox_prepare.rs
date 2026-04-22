@@ -1110,7 +1110,7 @@ pub(crate) fn prepare_sandbox(args: &SandboxArgs, silent: bool) -> Result<Prepar
     #[cfg(target_os = "macos")]
     if let Some(ref profile) = loaded_profile {
         if !profile.unsafe_macos_seatbelt_rules.is_empty() {
-            warn!(
+            info!(
                 "Profile uses {} raw Seatbelt rule(s) via unsafe_macos_seatbelt_rules — review carefully",
                 profile.unsafe_macos_seatbelt_rules.len()
             );
