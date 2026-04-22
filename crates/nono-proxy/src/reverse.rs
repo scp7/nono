@@ -23,7 +23,7 @@ use crate::route::RouteStore;
 use crate::token;
 use std::net::SocketAddr;
 use std::time::Duration;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
 use tracing::{debug, warn};
@@ -189,12 +189,27 @@ pub async fn handle_reverse_proxy(
     );
     debug!("Forwarding to upstream: {} {}", method, upstream_url);
 
-    let (upstream_host, upstream_port, upstream_path_full) = parse_upstream_url(&upstream_url)?;
+    let (upstream_scheme, upstream_host, upstream_port, upstream_path_full) =
+        parse_upstream_url(&upstream_url)?;
     let check = ctx.filter.check_host(&upstream_host, upstream_port).await?;
     if !check.result.is_allowed() {
         let reason = check.result.reason();
         warn!("Upstream host denied by filter: {}", reason);
         send_error(stream, 403, "Forbidden").await?;
+        audit::log_denied(
+            ctx.audit_log,
+            audit::ProxyMode::Reverse,
+            &service,
+            0,
+            &reason,
+        );
+        return Ok(());
+    }
+    if let Err(reason) =
+        validate_http_upstream_target(upstream_scheme, &upstream_host, &check.resolved_addrs)
+    {
+        warn!("{}", reason);
+        send_error(stream, 502, "Bad Gateway").await?;
         audit::log_denied(
             ctx.audit_log,
             audit::ProxyMode::Reverse,
@@ -213,33 +228,10 @@ pub async fn handle_reverse_proxy(
         None => return Ok(()),
     };
 
-    let connector = route.tls_connector.as_ref().unwrap_or(ctx.tls_connector);
-    let mut tls_stream = match connect_upstream_tls(
-        &upstream_host,
-        upstream_port,
-        &check.resolved_addrs,
-        connector,
-    )
-    .await
-    {
-        Ok(s) => s,
-        Err(e) => {
-            warn!("Upstream connection failed: {}", e);
-            send_error(stream, 502, "Bad Gateway").await?;
-            audit::log_denied(
-                ctx.audit_log,
-                audit::ProxyMode::Reverse,
-                &service,
-                0,
-                &e.to_string(),
-            );
-            return Ok(());
-        }
-    };
-
+    let upstream_authority = format_host_header(upstream_scheme, &upstream_host, upstream_port);
     let mut request = Zeroizing::new(format!(
         "{} {} {}\r\nHost: {}\r\n",
-        method, upstream_path_full, version, upstream_host
+        method, upstream_path_full, version, upstream_authority
     ));
 
     if let Some(cred) = cred {
@@ -264,13 +256,59 @@ pub async fn handle_reverse_proxy(
     }
     request.push_str("\r\n");
 
-    tls_stream.write_all(request.as_bytes()).await?;
-    if !body.is_empty() {
-        tls_stream.write_all(&body).await?;
-    }
-    tls_stream.flush().await?;
+    let status_code = match upstream_scheme {
+        UpstreamScheme::Https => {
+            let connector = route.tls_connector.as_ref().unwrap_or(ctx.tls_connector);
+            let mut tls_stream = match connect_upstream_tls(
+                &upstream_host,
+                upstream_port,
+                &check.resolved_addrs,
+                connector,
+            )
+            .await
+            {
+                Ok(s) => s,
+                Err(e) => {
+                    warn!("Upstream connection failed: {}", e);
+                    send_error(stream, 502, "Bad Gateway").await?;
+                    audit::log_denied(
+                        ctx.audit_log,
+                        audit::ProxyMode::Reverse,
+                        &service,
+                        0,
+                        &e.to_string(),
+                    );
+                    return Ok(());
+                }
+            };
 
-    let status_code = stream_response(&mut tls_stream, stream).await?;
+            write_upstream_request(&mut tls_stream, &request, &body).await?;
+            stream_response(&mut tls_stream, stream).await?
+        }
+        UpstreamScheme::Http => {
+            let mut upstream_stream =
+                match connect_upstream_tcp(&upstream_host, upstream_port, &check.resolved_addrs)
+                    .await
+                {
+                    Ok(s) => s,
+                    Err(e) => {
+                        warn!("Upstream connection failed: {}", e);
+                        send_error(stream, 502, "Bad Gateway").await?;
+                        audit::log_denied(
+                            ctx.audit_log,
+                            audit::ProxyMode::Reverse,
+                            &service,
+                            0,
+                            &e.to_string(),
+                        );
+                        return Ok(());
+                    }
+                };
+
+            write_upstream_request(&mut upstream_stream, &request, &body).await?;
+            stream_response(&mut upstream_stream, stream).await?
+        }
+    };
     audit::log_reverse_proxy(
         ctx.audit_log,
         &service,
@@ -325,14 +363,28 @@ async fn handle_oauth2_credential(
     );
     debug!("OAuth2 forwarding to upstream: {} {}", method, upstream_url);
 
-    let (upstream_host, upstream_port, upstream_path_full) = parse_upstream_url(&upstream_url)?;
-
+    let (upstream_scheme, upstream_host, upstream_port, upstream_path_full) =
+        parse_upstream_url(&upstream_url)?;
     // DNS resolve + host check via the filter
     let check = ctx.filter.check_host(&upstream_host, upstream_port).await?;
     if !check.result.is_allowed() {
         let reason = check.result.reason();
         warn!("Upstream host denied by filter: {}", reason);
         send_error(stream, 403, "Forbidden").await?;
+        audit::log_denied(
+            ctx.audit_log,
+            audit::ProxyMode::Reverse,
+            service,
+            0,
+            &reason,
+        );
+        return Ok(());
+    }
+    if let Err(reason) =
+        validate_http_upstream_target(upstream_scheme, &upstream_host, &check.resolved_addrs)
+    {
+        warn!("{}", reason);
+        send_error(stream, 502, "Bad Gateway").await?;
         audit::log_denied(
             ctx.audit_log,
             audit::ProxyMode::Reverse,
@@ -354,35 +406,11 @@ async fn handle_oauth2_credential(
         None => return Ok(()),
     };
 
-    // Connect to upstream over TLS, honoring any per-route custom CA / mTLS.
-    let connector = route.tls_connector.as_ref().unwrap_or(ctx.tls_connector);
-    let mut tls_stream = match connect_upstream_tls(
-        &upstream_host,
-        upstream_port,
-        &check.resolved_addrs,
-        connector,
-    )
-    .await
-    {
-        Ok(s) => s,
-        Err(e) => {
-            warn!("Upstream connection failed: {}", e);
-            send_error(stream, 502, "Bad Gateway").await?;
-            audit::log_denied(
-                ctx.audit_log,
-                audit::ProxyMode::Reverse,
-                service,
-                0,
-                &e.to_string(),
-            );
-            return Ok(());
-        }
-    };
-
     // Build upstream request with Bearer token injection
+    let upstream_authority = format_host_header(upstream_scheme, &upstream_host, upstream_port);
     let mut request = Zeroizing::new(format!(
         "{} {} {}\r\nHost: {}\r\n",
-        method, upstream_path_full, version, upstream_host
+        method, upstream_path_full, version, upstream_authority
     ));
 
     // Inject OAuth2 access token as Authorization: Bearer
@@ -401,16 +429,73 @@ async fn handle_oauth2_credential(
     }
     request.push_str("\r\n");
 
-    tls_stream.write_all(request.as_bytes()).await?;
-    if !body.is_empty() {
-        tls_stream.write_all(&body).await?;
-    }
-    tls_stream.flush().await?;
+    let status_code = match upstream_scheme {
+        UpstreamScheme::Https => {
+            let connector = route.tls_connector.as_ref().unwrap_or(ctx.tls_connector);
+            let mut tls_stream = match connect_upstream_tls(
+                &upstream_host,
+                upstream_port,
+                &check.resolved_addrs,
+                connector,
+            )
+            .await
+            {
+                Ok(s) => s,
+                Err(e) => {
+                    warn!("Upstream connection failed: {}", e);
+                    send_error(stream, 502, "Bad Gateway").await?;
+                    audit::log_denied(
+                        ctx.audit_log,
+                        audit::ProxyMode::Reverse,
+                        service,
+                        0,
+                        &e.to_string(),
+                    );
+                    return Ok(());
+                }
+            };
 
-    // Stream the response back
-    let status_code = stream_response(&mut tls_stream, stream).await?;
+            write_upstream_request(&mut tls_stream, &request, &body).await?;
+            stream_response(&mut tls_stream, stream).await?
+        }
+        UpstreamScheme::Http => {
+            let mut upstream_stream =
+                match connect_upstream_tcp(&upstream_host, upstream_port, &check.resolved_addrs)
+                    .await
+                {
+                    Ok(s) => s,
+                    Err(e) => {
+                        warn!("Upstream connection failed: {}", e);
+                        send_error(stream, 502, "Bad Gateway").await?;
+                        audit::log_denied(
+                            ctx.audit_log,
+                            audit::ProxyMode::Reverse,
+                            service,
+                            0,
+                            &e.to_string(),
+                        );
+                        return Ok(());
+                    }
+                };
+
+            write_upstream_request(&mut upstream_stream, &request, &body).await?;
+            stream_response(&mut upstream_stream, stream).await?
+        }
+    };
 
     audit::log_reverse_proxy(ctx.audit_log, service, method, upstream_path, status_code);
+    Ok(())
+}
+
+async fn write_upstream_request<S>(stream: &mut S, request: &str, body: &[u8]) -> Result<()>
+where
+    S: AsyncWrite + Unpin,
+{
+    stream.write_all(request.as_bytes()).await?;
+    if !body.is_empty() {
+        stream.write_all(body).await?;
+    }
+    stream.flush().await?;
     Ok(())
 }
 
@@ -445,10 +530,10 @@ async fn read_request_body(
 /// Stream the upstream TLS response back to the client.
 ///
 /// Returns the HTTP status code parsed from the first chunk.
-async fn stream_response(
-    tls_stream: &mut tokio_rustls::client::TlsStream<TcpStream>,
-    stream: &mut TcpStream,
-) -> Result<u16> {
+async fn stream_response<S>(tls_stream: &mut S, stream: &mut TcpStream) -> Result<u16>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
     let mut response_buf = [0u8; 8192];
     let mut status_code: u16 = 502;
     let mut first_chunk = true;
@@ -601,24 +686,86 @@ fn extract_content_length(header_bytes: &[u8]) -> Option<usize> {
 }
 
 /// Parse an upstream URL into (host, port, path).
-fn parse_upstream_url(url_str: &str) -> Result<(String, u16, String)> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UpstreamScheme {
+    Http,
+    Https,
+}
+
+fn validate_http_upstream_target(
+    scheme: UpstreamScheme,
+    host: &str,
+    resolved_addrs: &[SocketAddr],
+) -> std::result::Result<(), String> {
+    if matches!(scheme, UpstreamScheme::Https) {
+        return Ok(());
+    }
+
+    if is_local_only_target(host, resolved_addrs) {
+        Ok(())
+    } else {
+        Err(format!(
+            "refusing insecure http upstream for non-local host '{}'; http is only allowed for loopback addresses",
+            host
+        ))
+    }
+}
+
+fn is_local_only_target(host: &str, resolved_addrs: &[SocketAddr]) -> bool {
+    if !resolved_addrs.is_empty() {
+        return resolved_addrs.iter().all(|addr| addr.ip().is_loopback());
+    }
+
+    match host.parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V4(ip)) => ip.is_loopback(),
+        Ok(std::net::IpAddr::V6(ip)) => ip.is_loopback(),
+        Err(_) => false,
+    }
+}
+
+fn format_host_header(scheme: UpstreamScheme, host: &str, port: u16) -> String {
+    let default_port = match scheme {
+        UpstreamScheme::Http => 80,
+        UpstreamScheme::Https => 443,
+    };
+    let bracketed_host = if host.contains(':') && !host.starts_with('[') {
+        format!("[{}]", host)
+    } else {
+        host.to_string()
+    };
+
+    if port == default_port {
+        bracketed_host
+    } else {
+        format!("{}:{}", bracketed_host, port)
+    }
+}
+
+fn parse_upstream_url(url_str: &str) -> Result<(UpstreamScheme, String, u16, String)> {
     let parsed = url::Url::parse(url_str)
         .map_err(|e| ProxyError::HttpParse(format!("invalid upstream URL '{}': {}", url_str, e)))?;
 
-    let scheme = parsed.scheme();
-    if scheme != "https" && scheme != "http" {
-        return Err(ProxyError::HttpParse(format!(
-            "unsupported URL scheme: {}",
-            url_str
-        )));
-    }
+    let scheme = match parsed.scheme() {
+        "https" => UpstreamScheme::Https,
+        "http" => UpstreamScheme::Http,
+        _ => {
+            return Err(ProxyError::HttpParse(format!(
+                "unsupported URL scheme: {}",
+                url_str
+            )));
+        }
+    };
 
     let host = parsed
         .host_str()
         .ok_or_else(|| ProxyError::HttpParse(format!("missing host in URL: {}", url_str)))?
         .to_string();
 
-    let default_port = if scheme == "https" { 443 } else { 80 };
+    let default_port = if matches!(scheme, UpstreamScheme::Https) {
+        443
+    } else {
+        80
+    };
     let port = parsed.port().unwrap_or(default_port);
 
     let path = parsed.path().to_string();
@@ -635,7 +782,7 @@ fn parse_upstream_url(url_str: &str) -> Result<(String, u16, String)> {
         path
     };
 
-    Ok((host, port, path_with_query))
+    Ok((scheme, host, port, path_with_query))
 }
 
 /// Connect to an upstream host over TLS using pre-resolved addresses.
@@ -691,6 +838,29 @@ async fn connect_upstream_tls(
             })?;
 
     Ok(tls_stream)
+}
+
+async fn connect_upstream_tcp(
+    host: &str,
+    port: u16,
+    resolved_addrs: &[SocketAddr],
+) -> Result<TcpStream> {
+    if resolved_addrs.is_empty() {
+        let addr = format!("{}:{}", host, port);
+        match tokio::time::timeout(UPSTREAM_CONNECT_TIMEOUT, TcpStream::connect(&addr)).await {
+            Ok(Ok(s)) => Ok(s),
+            Ok(Err(e)) => Err(ProxyError::UpstreamConnect {
+                host: host.to_string(),
+                reason: e.to_string(),
+            }),
+            Err(_) => Err(ProxyError::UpstreamConnect {
+                host: host.to_string(),
+                reason: "connection timed out".to_string(),
+            }),
+        }
+    } else {
+        connect_to_resolved(resolved_addrs, host).await
+    }
 }
 
 /// Connect to one of the pre-resolved socket addresses with timeout.
@@ -1284,8 +1454,9 @@ mod tests {
 
     #[test]
     fn test_parse_upstream_url_https() {
-        let (host, port, path) =
+        let (scheme, host, port, path) =
             parse_upstream_url("https://api.openai.com/v1/chat/completions").unwrap();
+        assert_eq!(scheme, UpstreamScheme::Https);
         assert_eq!(host, "api.openai.com");
         assert_eq!(port, 443);
         assert_eq!(path, "/v1/chat/completions");
@@ -1293,7 +1464,8 @@ mod tests {
 
     #[test]
     fn test_parse_upstream_url_http_with_port() {
-        let (host, port, path) = parse_upstream_url("http://localhost:8080/api").unwrap();
+        let (scheme, host, port, path) = parse_upstream_url("http://localhost:8080/api").unwrap();
+        assert_eq!(scheme, UpstreamScheme::Http);
         assert_eq!(host, "localhost");
         assert_eq!(port, 8080);
         assert_eq!(path, "/api");
@@ -1301,7 +1473,8 @@ mod tests {
 
     #[test]
     fn test_parse_upstream_url_no_path() {
-        let (host, port, path) = parse_upstream_url("https://api.anthropic.com").unwrap();
+        let (scheme, host, port, path) = parse_upstream_url("https://api.anthropic.com").unwrap();
+        assert_eq!(scheme, UpstreamScheme::Https);
         assert_eq!(host, "api.anthropic.com");
         assert_eq!(port, 443);
         assert_eq!(path, "/");
@@ -1310,6 +1483,67 @@ mod tests {
     #[test]
     fn test_parse_upstream_url_invalid_scheme() {
         assert!(parse_upstream_url("ftp://example.com").is_err());
+    }
+
+    #[test]
+    fn test_validate_http_upstream_target_rejects_non_local_host() {
+        let err = validate_http_upstream_target(UpstreamScheme::Http, "api.example.com", &[])
+            .expect_err("non-local http upstream should be rejected");
+        assert!(err.contains("refusing insecure http upstream"));
+    }
+
+    #[test]
+    fn test_validate_http_upstream_target_allows_loopback() {
+        let loopback = [SocketAddr::from(([127, 0, 0, 1], 8080))];
+        assert!(validate_http_upstream_target(UpstreamScheme::Http, "127.0.0.1", &[]).is_ok());
+        assert!(validate_http_upstream_target(UpstreamScheme::Http, "::1", &[]).is_ok());
+        assert!(
+            validate_http_upstream_target(UpstreamScheme::Http, "localhost", &loopback).is_ok()
+        );
+    }
+
+    #[test]
+    fn test_validate_http_upstream_target_rejects_unspecified_addresses() {
+        let unspecified = [SocketAddr::from(([0, 0, 0, 0], 8080))];
+        let err = validate_http_upstream_target(UpstreamScheme::Http, "0.0.0.0", &[])
+            .expect_err("unspecified http upstream should be rejected");
+        assert!(err.contains("loopback addresses"));
+
+        let err = validate_http_upstream_target(UpstreamScheme::Http, "localhost", &unspecified)
+            .expect_err("localhost resolving to unspecified should be rejected");
+        assert!(err.contains("loopback addresses"));
+    }
+
+    #[test]
+    fn test_validate_http_upstream_target_rejects_localhost_resolving_non_loopback() {
+        let poisoned = [SocketAddr::from(([203, 0, 113, 10], 8080))];
+        let err = validate_http_upstream_target(UpstreamScheme::Http, "localhost", &poisoned)
+            .expect_err("localhost resolving off-host should be rejected");
+        assert!(err.contains("refusing insecure http upstream"));
+    }
+
+    #[test]
+    fn test_format_host_header_uses_port_for_non_default_http() {
+        assert_eq!(
+            format_host_header(UpstreamScheme::Http, "localhost", 8080),
+            "localhost:8080"
+        );
+    }
+
+    #[test]
+    fn test_format_host_header_omits_default_https_port() {
+        assert_eq!(
+            format_host_header(UpstreamScheme::Https, "api.openai.com", 443),
+            "api.openai.com"
+        );
+    }
+
+    #[test]
+    fn test_format_host_header_brackets_ipv6() {
+        assert_eq!(
+            format_host_header(UpstreamScheme::Http, "::1", 8080),
+            "[::1]:8080"
+        );
     }
 
     #[test]
