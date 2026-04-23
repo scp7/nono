@@ -47,11 +47,27 @@ expect_failure "nonexistent profile exits non-zero" \
 expect_output_contains "claude-code profile lists .claude in dry-run" ".claude" \
     "$NONO_BIN" run --profile claude-code --dry-run -- echo "test"
 
-expect_output_contains "codex profile lists .codex in dry-run" ".codex" \
-    "$NONO_BIN" run --profile codex --dry-run -- echo "test"
+if [[ -d "$HOME/.codex" ]]; then
+    expect_output_contains "codex profile lists .codex in dry-run" ".codex" \
+        "$NONO_BIN" run --profile codex --dry-run -- echo "test"
+else
+    expect_output_not_contains "codex profile hides missing .codex by default" ".codex" \
+        "$NONO_BIN" run --profile codex --dry-run -- echo "test"
+    expect_output_contains "codex profile shows missing .codex warning with -v" \
+        "Profile path '\$HOME/.codex' does not exist, skipping" \
+        "$NONO_BIN" run -v --profile codex --dry-run -- echo "test"
+fi
 
-expect_output_contains "opencode profile lists OpenTUI data dir in dry-run" ".local/share/opentui" \
-    "$NONO_BIN" run --profile opencode --dry-run -- echo "test"
+if [[ -d "$HOME/.local/share/opentui" ]]; then
+    expect_output_contains "opencode profile lists OpenTUI data dir in dry-run" ".local/share/opentui" \
+        "$NONO_BIN" run --profile opencode --dry-run -- echo "test"
+else
+    expect_output_not_contains "opencode profile hides missing OpenTUI dir by default" ".local/share/opentui" \
+        "$NONO_BIN" run --profile opencode --dry-run -- echo "test"
+    expect_output_contains "opencode profile shows missing OpenTUI dir warning with -v" \
+        "Profile path '\$HOME/.local/share/opentui' does not exist, skipping" \
+        "$NONO_BIN" run -v --profile opencode --dry-run -- echo "test"
+fi
 
 expect_output_contains "dry-run output shows Capabilities section" "Capabilities:" \
     "$NONO_BIN" run --profile claude-code --dry-run -- echo "test"
