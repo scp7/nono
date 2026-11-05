@@ -2736,6 +2736,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "nono-connect"
+version = "0.0.0"
+dependencies = [
+ "clap",
+ "futures-util",
+ "nix",
+ "rustls",
+ "rustls-native-certs",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tokio-tungstenite",
+ "ureq",
+ "url",
+ "urlencoding",
+ "windows-sys 0.61.2",
+ "zeroize",
+]
+
+[[package]]
 name = "nono-ffi"
 version = "0.1.0"
 dependencies = [

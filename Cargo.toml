@@ -5,6 +5,7 @@ members = [
     "crates/nono-cli",
     "crates/nono-proxy",
     "crates/nono-test-support",
+    "crates/nono-connect",
     "bindings/c",
 ]
 
