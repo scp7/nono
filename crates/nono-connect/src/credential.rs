@@ -50,7 +50,7 @@ pub fn load(token_file: Option<&Path>) -> Result<BearerToken> {
         return load_file(path);
     }
     match std::env::var(TOKEN_ENV) {
-        Ok(value) => BearerToken::parse(&value),
+        Ok(value) => BearerToken::parse(&Zeroizing::new(value)),
         Err(std::env::VarError::NotPresent) => Err(ConnectError::ActionRequired(format!(
             "no console credential: set {TOKEN_ENV} (or pass --token-file on Unix). \
              Browser sign-in is not available in this experimental client yet."
@@ -61,11 +61,20 @@ pub fn load(token_file: Option<&Path>) -> Result<BearerToken> {
     }
 }
 
+/// Open once and validate the opened file (`fstat`), so the checks and the
+/// read cannot be split by a path swap. `O_NONBLOCK` keeps a FIFO planted at
+/// the path from blocking the open; regular-file reads ignore it. The read is
+/// bounded independently of the size reported by `fstat`.
 #[cfg(unix)]
 fn load_file(path: &Path) -> Result<BearerToken> {
-    use std::os::unix::fs::PermissionsExt;
+    use std::io::Read;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
-    let metadata = std::fs::metadata(path)?;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(nix::libc::O_NONBLOCK)
+        .open(path)?;
+    let metadata = file.metadata()?;
     if !metadata.is_file() {
         return Err(ConnectError::Config(
             "connect token path must be a regular file".to_string(),
@@ -82,8 +91,17 @@ fn load_file(path: &Path) -> Result<BearerToken> {
                 .to_string(),
         ));
     }
-    let value = Zeroizing::new(std::fs::read_to_string(path)?);
-    BearerToken::parse(&value)
+    let mut bytes = Zeroizing::new(Vec::new());
+    file.take(TOKEN_FILE_LIMIT_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > TOKEN_FILE_LIMIT_BYTES {
+        return Err(ConnectError::Config(
+            "connect token file exceeds 64 KiB".to_string(),
+        ));
+    }
+    let text = std::str::from_utf8(&bytes)
+        .map_err(|_| ConnectError::Config("connect token file is not UTF-8".to_string()))?;
+    BearerToken::parse(text)
 }
 
 /// Fail secure: on Windows the client cannot yet verify that a token file's
@@ -132,6 +150,12 @@ mod tests {
         assert!(load(Some(&path)).is_err());
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
         assert!(load(Some(&path)).is_ok());
+        let fifo = dir.join("fifo");
+        nix::unistd::mkfifo(&fifo, nix::sys::stat::Mode::from_bits_truncate(0o600)).unwrap();
+        assert!(
+            load(Some(&fifo)).is_err(),
+            "a FIFO must be refused without blocking"
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

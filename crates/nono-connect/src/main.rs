@@ -66,16 +66,31 @@ enum Command {
 
 fn main() {
     let cli = Cli::parse();
-    let result = match cli.command {
-        Some(Command::Ps { all, json }) => run_ps(&cli.connect.console, all, json).map(|()| 0),
-        None => run_connect(cli.connect),
-    };
+    let result = run(cli);
     match result {
         Ok(code) => std::process::exit(code),
         Err(error) => {
-            eprintln!("nono-connect: {error}");
+            // Errors can quote console-controlled text; never let it drive the terminal.
+            eprintln!(
+                "nono-connect: {}",
+                sanitize_for_terminal(&error.to_string())
+            );
             std::process::exit(1);
         }
+    }
+}
+
+fn run(cli: Cli) -> Result<i32> {
+    // `nono-connect <target> ps` must not silently drop the target. A session
+    // literally named like a subcommand can be selected by its global ID.
+    if cli.command.is_some() && cli.connect.target.is_some() {
+        return Err(ConnectError::Config(
+            "a session target cannot be combined with a subcommand".to_string(),
+        ));
+    }
+    match cli.command {
+        Some(Command::Ps { all, json }) => run_ps(&cli.connect.console, all, json).map(|()| 0),
+        None => run_connect(cli.connect),
     }
 }
 
@@ -234,5 +249,32 @@ fn prompt_for_session(sessions: &[RemoteSession]) -> Result<RemoteSession> {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_target_with_a_subcommand_is_refused() {
+        for argv in [
+            ["nono-connect", "demo", "ps"],
+            ["nono-connect", "ps", "demo"],
+        ] {
+            if let Ok(cli) = Cli::try_parse_from(argv) {
+                assert!(
+                    matches!(run(cli), Err(ConnectError::Config(_))),
+                    "{argv:?} must be refused"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn platform_exit_codes_stay_non_zero() {
+        assert_ne!(platform_exit_code(256), 0);
+        assert_ne!(platform_exit_code(1), 0);
     }
 }

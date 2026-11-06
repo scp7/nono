@@ -92,3 +92,34 @@ impl ResizeSource {
         }
     }
 }
+
+pub(super) struct TerminationSource {
+    signals: Vec<Signal>,
+}
+
+impl TerminationSource {
+    pub(super) fn new() -> Result<Self> {
+        // Raw mode stops the tty from generating SIGINT/SIGQUIT, but they can
+        // still be sent with kill(1); SIGHUP means the terminal went away.
+        let kinds = [
+            SignalKind::terminate(),
+            SignalKind::hangup(),
+            SignalKind::interrupt(),
+            SignalKind::quit(),
+        ];
+        let signals = kinds
+            .into_iter()
+            .map(signal)
+            .collect::<io::Result<Vec<_>>>()
+            .map_err(ConnectError::Io)?;
+        Ok(Self { signals })
+    }
+
+    pub(super) async fn wait(&mut self) {
+        let waits = self
+            .signals
+            .iter_mut()
+            .map(|signal| Box::pin(signal.recv()));
+        let _ = futures_util::future::select_all(waits).await;
+    }
+}

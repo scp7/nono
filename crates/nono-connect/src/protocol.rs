@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::error::{ConnectError, Result};
+use crate::sanitize::sanitize_for_terminal;
 
 /// WebSocket subprotocol the client offers and requires.
 pub const TERMINAL_PROTOCOL_V1: &str = "nono.terminal.v1";
@@ -187,9 +188,16 @@ pub enum ServerControl {
 }
 
 /// Parse a server control frame.
+///
+/// serde's messages quote console-supplied text (for example an unknown
+/// `type`), so the error is sanitized before it can reach the terminal.
 pub fn parse_server_control(text: &str) -> Result<ServerControl> {
-    serde_json::from_str(text)
-        .map_err(|error| ConnectError::Protocol(format!("invalid terminal control frame: {error}")))
+    serde_json::from_str(text).map_err(|error| {
+        ConnectError::Protocol(format!(
+            "invalid terminal control frame: {}",
+            sanitize_for_terminal(&error.to_string())
+        ))
+    })
 }
 
 /// The `resize` control message. Zero dimensions are clamped to one, since
@@ -283,6 +291,11 @@ mod tests {
         ));
         assert!(parse_server_control(r#"{"type":"grant_admin"}"#).is_err());
         assert!(parse_server_control("not json").is_err());
+        let Err(error) = parse_server_control(r#"{"type":"a\u001b]52;c;QQ==\u0007b"}"#) else {
+            panic!("unknown control type must fail");
+        };
+        assert!(!error.to_string().contains('\u{1b}'));
+        assert!(!error.to_string().contains('\u{7}'));
     }
 
     #[test]

@@ -11,7 +11,8 @@
 //! the process right after the terminal is restored.
 
 use std::io;
-use std::thread::JoinHandle;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use tokio::sync::mpsc;
 
@@ -33,6 +34,39 @@ use windows as platform;
 compile_error!("nono-connect supports Unix and Windows terminals only");
 
 const CHANNEL_DEPTH: usize = 64;
+/// How long teardown waits for queued output before restoring the terminal.
+const OUTPUT_DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Alternate-screen state of the local terminal, for restoration from a
+/// console control handler that cannot reach the [`TerminalSession`].
+static IN_ALT_SCREEN: AtomicBool = AtomicBool::new(false);
+
+/// Bytes that reset the local terminal's VT state for the current screen.
+#[cfg(windows)]
+fn current_restore_escape() -> Vec<u8> {
+    restore_escape(IN_ALT_SCREEN.load(Ordering::Acquire), size().1)
+}
+
+/// Resolves when the process is asked to stop (SIGTERM/SIGHUP/SIGINT/SIGQUIT
+/// on Unix, Ctrl-Break on Windows), so the attachment can detach and restore
+/// the terminal instead of dying in raw mode.
+pub struct Termination {
+    inner: platform::TerminationSource,
+}
+
+impl Termination {
+    /// Start listening.
+    pub fn new() -> Result<Self> {
+        Ok(Self {
+            inner: platform::TerminationSource::new()?,
+        })
+    }
+
+    /// Wait for a termination request.
+    pub async fn requested(&mut self) {
+        self.inner.wait().await;
+    }
+}
 
 /// Whether stdin and stdout are both interactive terminals.
 pub fn is_interactive() -> bool {
@@ -80,7 +114,7 @@ impl ResizeWatcher {
 pub struct TerminalSession {
     raw: Option<platform::RawMode>,
     output: Option<mpsc::Sender<Vec<u8>>>,
-    writer: Option<JoinHandle<io::Result<()>>>,
+    writer_done: std::sync::mpsc::Receiver<()>,
     input: mpsc::Receiver<io::Result<Vec<u8>>>,
     screen: AltScreenTracker,
 }
@@ -95,14 +129,19 @@ impl TerminalSession {
             .spawn(move || input_thread(input_tx))
             .map_err(ConnectError::Io)?;
         let (output_tx, output_rx) = mpsc::channel(CHANNEL_DEPTH);
-        let writer = std::thread::Builder::new()
+        let (done_tx, writer_done) = std::sync::mpsc::channel();
+        std::thread::Builder::new()
             .name("nono-connect-output".to_string())
-            .spawn(move || output_thread(output_rx))
+            .spawn(move || {
+                let _ = output_thread(output_rx);
+                let _ = done_tx.send(());
+            })
             .map_err(ConnectError::Io)?;
+        IN_ALT_SCREEN.store(false, Ordering::Release);
         Ok(Self {
             raw: Some(raw),
             output: Some(output_tx),
-            writer: Some(writer),
+            writer_done,
             input,
             screen: AltScreenTracker::default(),
         })
@@ -116,6 +155,7 @@ impl TerminalSession {
     /// Queue hosted-session output for the terminal.
     pub async fn write(&mut self, bytes: Vec<u8>) -> Result<()> {
         self.screen.observe(&bytes);
+        IN_ALT_SCREEN.store(self.screen.in_alt_screen(), Ordering::Release);
         let sender = self.output.as_ref().ok_or_else(closed_output)?;
         sender.send(bytes).await.map_err(|_| closed_output())
     }
@@ -123,11 +163,10 @@ impl TerminalSession {
 
 impl Drop for TerminalSession {
     fn drop(&mut self) {
-        // Closing the channel lets the writer drain and exit.
+        // Closing the channel lets the writer drain and exit. Bound the wait:
+        // a stalled console must not keep the terminal in raw mode forever.
         self.output.take();
-        if let Some(writer) = self.writer.take() {
-            let _ = writer.join();
-        }
+        let _ = self.writer_done.recv_timeout(OUTPUT_DRAIN_TIMEOUT);
         let _ = platform::write_all(&restore_escape(self.screen.in_alt_screen(), size().1));
         // Restore console/termios modes last, after every VT byte is out.
         self.raw.take();

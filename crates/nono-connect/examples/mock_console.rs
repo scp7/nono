@@ -61,6 +61,8 @@ async fn serve(mut stream: TcpStream) -> std::io::Result<()> {
         return stream.shutdown().await;
     }
 
+    // tungstenite's handshake callback signature fixes this error type.
+    #[allow(clippy::result_large_err)]
     let callback = |request: &Request, mut response: Response| -> Result<Response, ErrorResponse> {
         let auth_ok = request
             .headers()

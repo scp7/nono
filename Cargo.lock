@@ -2743,7 +2743,7 @@ dependencies = [
  "futures-util",
  "nix",
  "rustls",
- "rustls-native-certs",
+ "rustls-platform-verifier",
  "serde",
  "serde_json",
  "thiserror",

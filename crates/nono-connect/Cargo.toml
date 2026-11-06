@@ -19,7 +19,7 @@ path = "src/main.rs"
 clap = { version = "4", features = ["derive", "env"] }
 futures-util = "0.3"
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12", "logging"] }
-rustls-native-certs = "0.8.5"
+rustls-platform-verifier = "0.7"
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -33,6 +33,9 @@ zeroize.workspace = true
 [target.'cfg(unix)'.dependencies]
 nix = { workspace = true, features = ["term", "signal"] }
 tokio = { version = "1", features = ["signal"] }
+
+[target.'cfg(unix)'.dev-dependencies]
+nix = { workspace = true, features = ["fs"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [

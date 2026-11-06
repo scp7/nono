@@ -17,7 +17,7 @@ use crate::protocol::{
     resize_message,
 };
 use crate::sanitize::sanitize_for_terminal;
-use crate::terminal::{self, ResizeWatcher, TerminalSession};
+use crate::terminal::{self, ResizeWatcher, TerminalSession, Termination};
 use crate::urls::{set_initial_terminal_size, validate_transport_url};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
@@ -94,6 +94,7 @@ pub async fn attach(
     let (mut ws_tx, mut ws_rx) = socket.split();
     let mut matcher = DetachMatcher::new(detach_sequence);
     let mut resize = ResizeWatcher::new(initial)?;
+    let mut termination = Termination::new()?;
     let mut session = TerminalSession::start()?;
     ws_tx
         .send(Message::Text(resize_message(initial.0, initial.1).into()))
@@ -118,6 +119,13 @@ pub async fn attach(
                 if matched.detach {
                     break send_detach(&mut ws_tx).await.map(|()| AttachOutcome::Detached);
                 }
+            }
+            () = termination.requested() => {
+                // Leave the hosted session running and restore the terminal.
+                let _ = send_detach(&mut ws_tx).await;
+                break Err(ConnectError::ActionRequired(
+                    "interrupted; detached from remote session".to_string(),
+                ));
             }
             (cols, rows) = resize.changed() => {
                 if let Err(error) = ws_tx.send(Message::Text(resize_message(cols, rows).into())).await {
@@ -204,25 +212,19 @@ fn ws_error(error: tokio_tungstenite::tungstenite::Error) -> ConnectError {
     ConnectError::Transport(format!("terminal connection failed: {error}"))
 }
 
-/// rustls with the `ring` provider named explicitly and the platform's native
-/// trust anchors (the Windows certificate store on Windows, so enterprise
-/// roots deployed by policy are honored). An empty store is an error, never
-/// an unverified connection.
+/// rustls with the `ring` provider named explicitly and the operating
+/// system's certificate verifier (CryptoAPI on Windows, Security.framework on
+/// macOS, the system store on Linux) — the same verifier the HTTPS session
+/// listing uses through ureq, so both connections to the console agree and
+/// enterprise roots deployed by policy are honored. There is no insecure mode.
 fn tls_connector() -> Result<tokio_tungstenite::Connector> {
-    let native = rustls_native_certs::load_native_certs();
-    let mut roots = rustls::RootCertStore::empty();
-    let (added, _ignored) = roots.add_parsable_certificates(native.certs);
-    if added == 0 {
-        return Err(ConnectError::Transport(
-            "no trusted root certificates found for the terminal connection".to_string(),
-        ));
-    }
+    use rustls_platform_verifier::BuilderVerifierExt;
     let config = rustls::ClientConfig::builder_with_provider(Arc::new(
         rustls::crypto::ring::default_provider(),
     ))
     .with_safe_default_protocol_versions()
+    .and_then(|builder| builder.with_platform_verifier())
     .map_err(|error| ConnectError::Transport(format!("terminal TLS configuration: {error}")))?
-    .with_root_certificates(roots)
     .with_no_client_auth();
     Ok(tokio_tungstenite::Connector::Rustls(Arc::new(config)))
 }

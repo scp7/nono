@@ -11,6 +11,7 @@
 
 use std::io;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use windows_sys::Win32::Foundation::{FALSE, HANDLE, INVALID_HANDLE_VALUE};
@@ -18,11 +19,11 @@ use windows_sys::Win32::Storage::FileSystem::WriteFile;
 use windows_sys::Win32::System::Console::{
     CONSOLE_MODE, CONSOLE_SCREEN_BUFFER_INFO, CTRL_BREAK_EVENT, CTRL_CLOSE_EVENT,
     CTRL_LOGOFF_EVENT, CTRL_SHUTDOWN_EVENT, DISABLE_NEWLINE_AUTO_RETURN, ENABLE_ECHO_INPUT,
-    ENABLE_LINE_INPUT, ENABLE_PROCESSED_INPUT, ENABLE_PROCESSED_OUTPUT,
-    ENABLE_VIRTUAL_TERMINAL_INPUT, ENABLE_VIRTUAL_TERMINAL_PROCESSING, GetConsoleCP,
-    GetConsoleMode, GetConsoleOutputCP, GetConsoleScreenBufferInfo, GetStdHandle, ReadConsoleW,
-    STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, SetConsoleCP, SetConsoleCtrlHandler, SetConsoleMode,
-    SetConsoleOutputCP,
+    ENABLE_EXTENDED_FLAGS, ENABLE_LINE_INPUT, ENABLE_PROCESSED_INPUT, ENABLE_PROCESSED_OUTPUT,
+    ENABLE_QUICK_EDIT_MODE, ENABLE_VIRTUAL_TERMINAL_INPUT, ENABLE_VIRTUAL_TERMINAL_PROCESSING,
+    GetConsoleCP, GetConsoleMode, GetConsoleOutputCP, GetConsoleScreenBufferInfo, GetStdHandle,
+    ReadConsoleW, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, SetConsoleCP, SetConsoleCtrlHandler,
+    SetConsoleMode, SetConsoleOutputCP,
 };
 
 use crate::error::{ConnectError, Result};
@@ -46,6 +47,9 @@ struct SavedConsole {
 unsafe impl Send for SavedConsole {}
 
 static SAVED: Mutex<Option<SavedConsole>> = Mutex::new(None);
+/// Set by the control handler on Ctrl-Break while an attachment is active.
+static BREAK_REQUESTED: AtomicBool = AtomicBool::new(false);
+static BREAK_NOTIFY: tokio::sync::Notify = tokio::sync::Notify::const_new();
 
 fn std_handle(kind: u32) -> io::Result<HANDLE> {
     // SAFETY: GetStdHandle has no preconditions; it returns a borrowed handle.
@@ -78,27 +82,46 @@ fn set_console_mode(handle: HANDLE, mode: CONSOLE_MODE) -> io::Result<()> {
 }
 
 fn restore(saved: &SavedConsole) {
+    // Re-enabling Quick Edit only takes effect with ENABLE_EXTENDED_FLAGS.
+    let input_mode = if saved.input_mode & ENABLE_QUICK_EDIT_MODE != 0 {
+        saved.input_mode | ENABLE_EXTENDED_FLAGS
+    } else {
+        saved.input_mode
+    };
     // SAFETY: each call takes plain values captured from the same console.
     unsafe {
-        SetConsoleMode(saved.input, saved.input_mode);
+        SetConsoleMode(saved.input, input_mode);
         SetConsoleMode(saved.output, saved.output_mode);
         SetConsoleCP(saved.input_cp);
         SetConsoleOutputCP(saved.output_cp);
     }
 }
 
-/// Restore the console if the process is being torn down by the console.
+/// Console control handler.
+///
+/// Ctrl-Break is turned into a graceful detach: the attach loop is woken and
+/// the event is reported handled. Window close, logoff and shutdown terminate
+/// the process once the handler returns, so restore the console here: VT
+/// state first (while VT processing is still on), then modes and code pages.
+/// Ctrl-C never arrives here because processed input is off.
 unsafe extern "system" fn control_handler(event: u32) -> i32 {
-    if matches!(
-        event,
-        CTRL_BREAK_EVENT | CTRL_CLOSE_EVENT | CTRL_LOGOFF_EVENT | CTRL_SHUTDOWN_EVENT
-    ) && let Ok(guard) = SAVED.lock()
-        && let Some(saved) = guard.as_ref()
-    {
-        restore(saved);
+    match event {
+        CTRL_BREAK_EVENT => {
+            BREAK_REQUESTED.store(true, Ordering::Release);
+            BREAK_NOTIFY.notify_one();
+            1
+        }
+        CTRL_CLOSE_EVENT | CTRL_LOGOFF_EVENT | CTRL_SHUTDOWN_EVENT => {
+            if let Ok(guard) = SAVED.lock()
+                && let Some(saved) = guard.as_ref()
+            {
+                let _ = write_all(&super::current_restore_escape());
+                restore(saved);
+            }
+            FALSE
+        }
+        _ => FALSE,
     }
-    // Let the default handler terminate the process.
-    FALSE
 }
 
 pub(super) fn size() -> Option<(u16, u16)> {
@@ -188,9 +211,15 @@ impl RawMode {
         let guard = Self { saved };
 
         // From here on, `guard`'s Drop restores the console on any failure.
+        // Quick Edit is turned off: a mouse selection would otherwise freeze
+        // console output and, through backpressure, the whole attachment.
         let raw_input = (input_mode
-            & !(ENABLE_ECHO_INPUT | ENABLE_LINE_INPUT | ENABLE_PROCESSED_INPUT))
-            | ENABLE_VIRTUAL_TERMINAL_INPUT;
+            & !(ENABLE_ECHO_INPUT
+                | ENABLE_LINE_INPUT
+                | ENABLE_PROCESSED_INPUT
+                | ENABLE_QUICK_EDIT_MODE))
+            | ENABLE_VIRTUAL_TERMINAL_INPUT
+            | ENABLE_EXTENDED_FLAGS;
         set_console_mode(input, raw_input).map_err(not_console)?;
         let vt_output = output_mode
             | ENABLE_PROCESSED_OUTPUT
@@ -296,5 +325,24 @@ impl ResizeSource {
 
     pub(super) async fn wait(&mut self) {
         self.interval.tick().await;
+    }
+}
+
+pub(super) struct TerminationSource;
+
+impl TerminationSource {
+    pub(super) fn new() -> Result<Self> {
+        BREAK_REQUESTED.store(false, Ordering::Release);
+        Ok(Self)
+    }
+
+    pub(super) async fn wait(&mut self) {
+        loop {
+            let notified = BREAK_NOTIFY.notified();
+            if BREAK_REQUESTED.swap(false, Ordering::AcqRel) {
+                return;
+            }
+            notified.await;
+        }
     }
 }
