@@ -61,9 +61,14 @@ Implementation details:
 - **Resize** is detected by polling the window size every 250 ms. Resize
   events are only delivered through `ReadConsoleInput`, which would compete
   with the input reader.
-- **Restore**: the original modes and code pages are restored on drop. The
-  client waits at most 2 s for queued output first, so a stalled console
-  cannot keep raw mode on.
+- **Restore**: on detach the output thread discards any queued output (the
+  screen is cleared anyway), writes the VT reset as its last write, and only
+  then are the original modes and code pages restored. If the console is
+  stalled for more than 2 s the client restores anyway, so raw mode cannot
+  stick.
+- **Detach keys**: a lone ESC at the end of a read is held for 30 ms in case
+  it starts a CSI-u key report split across reads, then forwarded as a plain
+  Esc.
 - **Ctrl-Break** detaches cleanly, the same as SIGTERM, SIGHUP, SIGINT or
   SIGQUIT on Unix. The hosted session keeps running.
 - **Window close, logoff and shutdown**: the console control handler resets
@@ -85,7 +90,8 @@ Implementation details:
   sensitive. The HTTP and WebSocket libraries make their own copies of the
   header that are not zeroized; those copies live only for the request.
 - **Token file (Unix).** The file is opened once, and the open handle is
-  checked: it must be a regular file, mode 0600, at most 64 KiB. The read is
+  checked: it must be a regular file, owned by the invoking user, mode 0600,
+  at most 64 KiB. The read is
   capped at 64 KiB as well. A FIFO is refused without blocking.
 - **Transport.** Connections use WSS or HTTPS. Both the session listing and
   the terminal WebSocket use the operating system's certificate verifier
@@ -94,8 +100,10 @@ Implementation details:
   only on loopback. There is no insecure TLS flag.
 - **Where the token goes.** The token is sent only to the `--console` origin.
   Origins are compared by parsed host and port, never by string prefix. A
-  direct `wss://` target must match `--console`. HTTP redirects are not
-  followed.
+  direct `ws(s)://` target must match `--console`, with no exception for
+  loopback, so another local user's listener cannot collect the token. HTTP
+  redirects are not followed. Environment proxies are used only for HTTPS
+  consoles; a cleartext loopback console is never proxied.
 - **Untrusted console data.** Session names, error messages and other console
   text are sanitized before they are printed. So is every error the client
   prints, because errors can quote console text. PTY output is passed through
@@ -119,7 +127,9 @@ Implementation details:
    keybindings may intercept Ctrl-].
 5. **Sharing code with `nono-cli`.** Move `nono connect` onto this crate and
    delete the duplicated protocol and detach code.
-6. **Windows CI.** A `windows-latest` job that runs the unit tests, plus a
+6. **Proxy support for the WebSocket.** The terminal connection does not go
+   through `HTTPS_PROXY` yet, so networks that require a proxy cannot attach.
+7. **Windows CI.** A `windows-latest` job that runs the unit tests, plus a
    smoke test against the mock console.
 
 ## Trying it
@@ -128,6 +138,9 @@ Implementation details:
 cargo run -p nono-connect --example mock_console -- 127.0.0.1:8765
 NONO_CONNECT_TOKEN=test-token nono-connect --console http://127.0.0.1:8765 ps
 NONO_CONNECT_TOKEN=test-token nono-connect --console http://127.0.0.1:8765 demo
+# or a direct terminal URL, which must match --console:
+NONO_CONNECT_TOKEN=test-token nono-connect --console http://127.0.0.1:8765 \
+  ws://127.0.0.1:8765/api/v1/sessions/local%3Amock%3A0001/terminal
 ```
 
 In the mock session, type `exit` to end it with status 3, or press Ctrl-]

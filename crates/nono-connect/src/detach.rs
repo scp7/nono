@@ -48,6 +48,21 @@ impl DetachMatcher {
         self.pending_match_len > 0 || !self.pending_escape.is_empty()
     }
 
+    /// Whether exactly a lone ESC is being held at the end of input.
+    pub fn has_lone_escape(&self) -> bool {
+        self.pending_escape == b"\x1b"
+    }
+
+    /// Forward a held lone ESC (and any partial detach prefix before it):
+    /// no CSI followed, so it was an ordinary Esc key press.
+    pub fn flush_lone_escape(&mut self) -> Vec<u8> {
+        let mut forward = Vec::new();
+        if self.has_lone_escape() {
+            self.flush_pending(&mut forward);
+        }
+        forward
+    }
+
     /// Feed one chunk of local input.
     pub fn push(&mut self, input: &[u8]) -> DetachMatch {
         let mut forward = Vec::with_capacity(input.len());
@@ -106,8 +121,11 @@ impl DetachMatcher {
                 continue;
             }
 
+            // A trailing ESC may be the start of a CSI key report split
+            // across reads; hold it (the caller flushes it after a grace
+            // period via `flush_lone_escape`).
             if byte == b'\x1b'
-                && input.get(index + 1).copied() == Some(b'[')
+                && matches!(input.get(index + 1).copied(), Some(b'[') | None)
                 && self
                     .sequence
                     .get(self.pending_match_len)
@@ -381,6 +399,28 @@ mod tests {
         assert_eq!(result.forward, b"\x1b[99;5u\x1b[A");
         assert!(!result.detach);
         assert!(!m.has_pending());
+    }
+
+    #[test]
+    fn csi_u_detach_key_split_after_escape_is_recognized() {
+        let mut m = matcher();
+        let first = m.push(b"\x1b");
+        assert!(first.forward.is_empty());
+        assert!(m.has_lone_escape());
+        assert!(m.push(b"[93;5u").forward.is_empty());
+        assert!(m.push(b"d").detach);
+    }
+
+    #[test]
+    fn a_lone_escape_key_is_flushed_after_the_grace_period() {
+        let mut m = matcher();
+        assert!(m.push(b"x\x1b").forward == b"x");
+        assert_eq!(m.flush_lone_escape(), b"\x1b");
+        assert!(!m.has_pending());
+        // An ESC followed by an ordinary key is forwarded immediately.
+        let mut m = matcher();
+        assert_eq!(m.push(b"\x1b").forward, b"");
+        assert_eq!(m.push(b"j").forward, b"\x1bj");
     }
 
     #[test]

@@ -68,12 +68,11 @@ pub fn same_origin_host_port(url: &Url, origin: &Url) -> bool {
 /// Refuse to send the console token to an origin the operator did not name.
 ///
 /// This client has no enrollment state to discover a console from, so a
-/// direct `wss://` target is accepted only when it matches `--console`.
-/// Loopback stays the documented development exception.
+/// direct `ws(s)://` target is accepted only when it matches `--console`.
+/// There is no loopback exception: another local user's listener on an
+/// arbitrary loopback port must not receive the token either. Loopback
+/// development passes `--console http://127.0.0.1:<port>`.
 pub fn verify_attach_origin(url: &Url, console: Option<&Url>) -> Result<()> {
-    if is_loopback(url) {
-        return Ok(());
-    }
     if console.is_some_and(|origin| same_origin_host_port(url, origin)) {
         return Ok(());
     }
@@ -84,12 +83,15 @@ pub fn verify_attach_origin(url: &Url, console: Option<&Url>) -> Result<()> {
     )))
 }
 
-/// Loopback by parsed host: `localhost`, `127.0.0.0/8`, or `::1`.
+/// Loopback by parsed host: exactly `localhost`, `127.0.0.1`, or `::1`.
+///
+/// Deliberately narrower than "any loopback address" so the cleartext
+/// development exception stays as small as nono-cli's.
 pub fn is_loopback(url: &Url) -> bool {
     match url.host() {
         Some(Host::Domain(domain)) => domain.eq_ignore_ascii_case("localhost"),
-        Some(Host::Ipv4(address)) => address.is_loopback(),
-        Some(Host::Ipv6(address)) => address.is_loopback(),
+        Some(Host::Ipv4(address)) => address == std::net::Ipv4Addr::LOCALHOST,
+        Some(Host::Ipv6(address)) => address == std::net::Ipv6Addr::LOCALHOST,
         None => false,
     }
 }
@@ -160,6 +162,7 @@ mod tests {
         assert!(!is_loopback(&url("http://localhost.evil.example")));
         assert!(!is_loopback(&url("http://127.0.0.1.evil.example")));
         assert!(is_loopback(&url("ws://127.0.0.1/terminal")));
+        assert!(!is_loopback(&url("ws://127.3.4.5/terminal")));
     }
 
     #[test]
@@ -186,7 +189,11 @@ mod tests {
                 "{evil}"
             );
         }
-        assert!(verify_attach_origin(&url("ws://127.0.0.1:9/t"), None).is_ok());
+        // No loopback exception: the token goes only to the named console.
+        assert!(verify_attach_origin(&url("ws://127.0.0.1:9/t"), None).is_err());
+        let local = url("http://127.0.0.1:8765");
+        assert!(verify_attach_origin(&url("ws://127.0.0.1:9999/t"), Some(&local)).is_err());
+        assert!(verify_attach_origin(&url("ws://127.0.0.1:8765/t"), Some(&local)).is_ok());
     }
 
     #[test]

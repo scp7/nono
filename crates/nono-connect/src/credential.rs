@@ -68,7 +68,7 @@ pub fn load(token_file: Option<&Path>) -> Result<BearerToken> {
 #[cfg(unix)]
 fn load_file(path: &Path) -> Result<BearerToken> {
     use std::io::Read;
-    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 
     let file = std::fs::OpenOptions::new()
         .read(true)
@@ -83,6 +83,11 @@ fn load_file(path: &Path) -> Result<BearerToken> {
     if metadata.len() > TOKEN_FILE_LIMIT_BYTES {
         return Err(ConnectError::Config(
             "connect token file exceeds 64 KiB".to_string(),
+        ));
+    }
+    if metadata.uid() != nix::unistd::Uid::effective().as_raw() {
+        return Err(ConnectError::ActionRequired(
+            "connect token file must be owned by the user running nono-connect".to_string(),
         ));
     }
     if metadata.permissions().mode() & 0o077 != 0 {

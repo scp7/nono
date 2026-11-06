@@ -23,6 +23,9 @@ use crate::urls::{set_initial_terminal_size, validate_transport_url};
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 /// Largest single frame accepted from the console.
 const MAX_FRAME_BYTES: usize = 4 * 1024 * 1024;
+/// How long a lone trailing ESC is held while waiting for the rest of a
+/// possible CSI-u key report. Short enough to be imperceptible on Esc.
+const ESCAPE_GRACE: Duration = Duration::from_millis(30);
 
 /// How an attachment ended.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -44,6 +47,9 @@ pub async fn attach(
     on_connected: impl FnOnce(&Url),
 ) -> Result<AttachOutcome> {
     validate_transport_url(&url)?;
+    // Listen for resizes before connecting so one during the handshake is
+    // not lost; the first resize sent after connecting re-reads the size.
+    let mut resize = ResizeWatcher::new(terminal::size())?;
     let initial = terminal::size();
     set_initial_terminal_size(&mut url, initial.0, initial.1);
 
@@ -93,13 +99,18 @@ pub async fn attach(
 
     let (mut ws_tx, mut ws_rx) = socket.split();
     let mut matcher = DetachMatcher::new(detach_sequence);
-    let mut resize = ResizeWatcher::new(initial)?;
     let mut termination = Termination::new()?;
     let mut session = TerminalSession::start()?;
+    let current = resize.mark_reported(terminal::size());
     ws_tx
-        .send(Message::Text(resize_message(initial.0, initial.1).into()))
+        .send(Message::Text(resize_message(current.0, current.1).into()))
         .await
         .map_err(ws_error)?;
+    // A lone ESC at the end of a read may be the start of an enhanced-key
+    // detach sequence split across reads; give it a moment, then forward it.
+    let escape_grace = tokio::time::sleep(ESCAPE_GRACE);
+    tokio::pin!(escape_grace);
+    let mut escape_pending = false;
 
     let outcome = loop {
         tokio::select! {
@@ -111,6 +122,10 @@ pub async fn attach(
                     _ => break send_detach(&mut ws_tx).await.map(|()| AttachOutcome::Detached),
                 };
                 let matched = matcher.push(&bytes);
+                escape_pending = matcher.has_lone_escape();
+                if escape_pending {
+                    escape_grace.as_mut().reset(tokio::time::Instant::now() + ESCAPE_GRACE);
+                }
                 if !matched.forward.is_empty()
                     && let Err(error) = ws_tx.send(Message::Binary(matched.forward.into())).await
                 {
@@ -118,6 +133,15 @@ pub async fn attach(
                 }
                 if matched.detach {
                     break send_detach(&mut ws_tx).await.map(|()| AttachOutcome::Detached);
+                }
+            }
+            () = &mut escape_grace, if escape_pending => {
+                escape_pending = false;
+                let stale = matcher.flush_lone_escape();
+                if !stale.is_empty()
+                    && let Err(error) = ws_tx.send(Message::Binary(stale.into())).await
+                {
+                    break Err(ws_error(error));
                 }
             }
             () = termination.requested() => {

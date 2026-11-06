@@ -28,14 +28,28 @@ pub fn sanitize_for_terminal(input: &str) -> String {
             }
             continue;
         }
-        // `is_control` covers C0, DEL and C1 (including the 8-bit CSI U+009B).
-        if c.is_control() {
+        // `is_control` covers C0, DEL and C1 (including the 8-bit CSI U+009B);
+        // bidi and invisible format characters could reorder or hide text.
+        if c.is_control() || is_deceptive_format(c) {
             result.push(' ');
         } else {
             result.push(c);
         }
     }
     result
+}
+
+/// Bidirectional overrides/isolates, zero-width and line-separator
+/// characters that can visually reorder or hide console-supplied text.
+fn is_deceptive_format(c: char) -> bool {
+    matches!(
+        c,
+        '\u{061C}'
+            | '\u{200B}'..='\u{200F}'
+            | '\u{2028}'..='\u{202E}'
+            | '\u{2060}'..='\u{2069}'
+            | '\u{FEFF}'
+    )
 }
 
 #[cfg(test)]
@@ -48,5 +62,7 @@ mod tests {
         assert_eq!(sanitize_for_terminal("t\x1b]0;title\x07x"), "tx");
         assert_eq!(sanitize_for_terminal("t\x1b]52;c;Zm9v\x1b\\x"), "tx");
         assert_eq!(sanitize_for_terminal("a\rb\nc\u{9b}2J"), "a b c 2J");
+        assert_eq!(sanitize_for_terminal("ab\u{202e}cd\u{200b}e"), "ab cd e");
+        assert_eq!(sanitize_for_terminal("café ✓"), "café ✓");
     }
 }

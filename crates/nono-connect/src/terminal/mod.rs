@@ -11,6 +11,7 @@
 //! the process right after the terminal is restored.
 
 use std::io;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
@@ -94,6 +95,13 @@ impl ResizeWatcher {
         })
     }
 
+    /// Record `size` as reported (for example after re-reading it once
+    /// connected) and return it.
+    pub fn mark_reported(&mut self, size: (u16, u16)) -> (u16, u16) {
+        self.last = size;
+        size
+    }
+
     /// Wait for the next size change.
     pub async fn changed(&mut self) -> (u16, u16) {
         loop {
@@ -114,6 +122,7 @@ impl ResizeWatcher {
 pub struct TerminalSession {
     raw: Option<platform::RawMode>,
     output: Option<mpsc::Sender<Vec<u8>>>,
+    stopping: Arc<AtomicBool>,
     writer_done: std::sync::mpsc::Receiver<()>,
     input: mpsc::Receiver<io::Result<Vec<u8>>>,
     screen: AltScreenTracker,
@@ -130,10 +139,12 @@ impl TerminalSession {
             .map_err(ConnectError::Io)?;
         let (output_tx, output_rx) = mpsc::channel(CHANNEL_DEPTH);
         let (done_tx, writer_done) = std::sync::mpsc::channel();
+        let stopping = Arc::new(AtomicBool::new(false));
+        let writer_stopping = Arc::clone(&stopping);
         std::thread::Builder::new()
             .name("nono-connect-output".to_string())
             .spawn(move || {
-                let _ = output_thread(output_rx);
+                let _ = output_thread(output_rx, &writer_stopping);
                 let _ = done_tx.send(());
             })
             .map_err(ConnectError::Io)?;
@@ -141,6 +152,7 @@ impl TerminalSession {
         Ok(Self {
             raw: Some(raw),
             output: Some(output_tx),
+            stopping,
             writer_done,
             input,
             screen: AltScreenTracker::default(),
@@ -163,12 +175,18 @@ impl TerminalSession {
 
 impl Drop for TerminalSession {
     fn drop(&mut self) {
-        // Closing the channel lets the writer drain and exit. Bound the wait:
-        // a stalled console must not keep the terminal in raw mode forever.
+        // The writer owns the console output. Tell it to discard the backlog
+        // (the restore escape clears the screen anyway) and write the restore
+        // escape as its last act, so no hosted output can follow the reset.
+        self.stopping.store(true, Ordering::Release);
         self.output.take();
-        let _ = self.writer_done.recv_timeout(OUTPUT_DRAIN_TIMEOUT);
-        let _ = platform::write_all(&restore_escape(self.screen.in_alt_screen(), size().1));
-        // Restore console/termios modes last, after every VT byte is out.
+        if self.writer_done.recv_timeout(OUTPUT_DRAIN_TIMEOUT).is_err() {
+            // The console is stalled in a single write. Restore anyway rather
+            // than leave raw mode on; at most that one in-flight chunk can
+            // still land after the reset.
+            let _ = platform::write_all(&restore_escape(self.screen.in_alt_screen(), size().1));
+        }
+        // Restore console/termios modes last, after the VT reset is out.
         self.raw.take();
     }
 }
@@ -191,17 +209,19 @@ fn input_thread(sender: mpsc::Sender<io::Result<Vec<u8>>>) {
     }
 }
 
-fn output_thread(mut receiver: mpsc::Receiver<Vec<u8>>) -> io::Result<()> {
+fn output_thread(mut receiver: mpsc::Receiver<Vec<u8>>, stopping: &AtomicBool) -> io::Result<()> {
     let mut carry = Utf8Carry::default();
+    let mut screen = AltScreenTracker::default();
     while let Some(bytes) = receiver.blocking_recv() {
+        if stopping.load(Ordering::Acquire) {
+            break;
+        }
         let ready = carry.push(&bytes);
         if !ready.is_empty() {
+            screen.observe(&ready);
             platform::write_all(&ready)?;
         }
     }
-    let rest = carry.finish();
-    if !rest.is_empty() {
-        platform::write_all(&rest)?;
-    }
-    Ok(())
+    // Track what actually reached the terminal, not what was queued.
+    platform::write_all(&restore_escape(screen.in_alt_screen(), size().1))
 }

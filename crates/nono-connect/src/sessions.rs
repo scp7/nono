@@ -11,11 +11,20 @@ use crate::urls::console_endpoint;
 
 const RESPONSE_LIMIT_BYTES: u64 = 1024 * 1024;
 
-fn http_agent() -> ureq::Agent {
+fn http_agent(console: &Url) -> ureq::Agent {
     let tls_config = ureq::tls::TlsConfig::builder()
         .root_certs(ureq::tls::RootCerts::PlatformVerifier)
         .build();
+    // Environment proxies stay available for HTTPS consoles (the tunnel keeps
+    // TLS end to end), but a cleartext loopback console must never be routed
+    // through a proxy, which would carry the bearer token in the clear.
+    let proxy = if console.scheme() == "https" {
+        ureq::Proxy::try_from_env()
+    } else {
+        None
+    };
     ureq::Agent::config_builder()
+        .proxy(proxy)
         .timeout_global(Some(Duration::from_secs(15)))
         .timeout_connect(Some(Duration::from_secs(5)))
         .tls_config(tls_config)
@@ -31,7 +40,7 @@ fn http_agent() -> ureq::Agent {
 pub fn fetch_sessions(console: &Url, token: &BearerToken) -> Result<Vec<RemoteSession>> {
     let endpoint = console_endpoint(console, "/api/v1/sessions");
     let authorization = token.authorization();
-    let mut response = http_agent()
+    let mut response = http_agent(console)
         .get(endpoint.as_str())
         .header("Authorization", authorization.as_str())
         .call()
